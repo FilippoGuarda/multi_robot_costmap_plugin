@@ -1,3 +1,17 @@
+// Copyright 2025 Filippo Guarda
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #include "multi_robot_costmap_plugin/footprint_aware_multi_robot_layer.hpp"
 #include <pluginlib/class_list_macros.hpp>
 
@@ -208,12 +222,21 @@ geometry_msgs::msg::Polygon FootprintAwareMultiRobotLayer::addFootprintPadding(
     const geometry_msgs::msg::Polygon& footprint, double padding)
 {
   geometry_msgs::msg::Polygon padded = footprint;
-  // Simple uniform padding logic (expand points radially)
-  for (auto& pt : padded.points) {
-    double mag = std::hypot(pt.x, pt.y);
-    if (mag > 1e-6) {
-      pt.x *= (mag + padding) / mag;
-      pt.y *= (mag + padding) / mag;
+  
+  // For each point, move it outward along the normal direction
+  for (size_t i = 0; i < padded.points.size(); ++i) {
+    auto& pt = padded.points[i];
+    
+    // Simple uniform expansion (better approach would use polygon offsetting)
+    double magnitude = std::sqrt(pt.x * pt.x + pt.y * pt.y);
+    if (magnitude > 1e-9) {
+      double scale_factor = (magnitude + padding) / magnitude;
+      pt.x *= scale_factor;
+      pt.y *= scale_factor;
+    } else {
+      // Handle points at origin
+      pt.x = padding;
+      pt.y = 0.0;
     }
   }
   return padded;

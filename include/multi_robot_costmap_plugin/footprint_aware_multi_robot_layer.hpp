@@ -7,9 +7,10 @@
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <geometry_msgs/msg/polygon_stamped.hpp>
 #include <laser_geometry/laser_geometry.hpp>
-#include "tf2_ros/buffer.h"
+#include <sensor_msgs/point_cloud2_iterator.hpp>
 #include "tf2_ros/transform_listener.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#include "tf2/utils.h"
 
 namespace multi_robot_costmap_plugin
 {
@@ -34,8 +35,16 @@ public:
   
   // Additional methods that may be required
   virtual void matchSize() override;
-  virtual bool isClearable() override { return false; }
+  virtual bool isClearable() override { return true; }
 
+  // Test checks for footprint based point removal
+  virtual bool isPointInsidePolygon(double x, double y, const std::vector<geometry_msgs::msg::Point32>& polygon);
+  geometry_msgs::msg::Polygon transformFootprintToGlobal(
+      const geometry_msgs::msg::Polygon& footprint, 
+      const geometry_msgs::msg::Pose& robot_pose);
+  geometry_msgs::msg::Polygon addFootprintPadding(const geometry_msgs::msg::Polygon& footprint, double padding);
+  
+  
 private:
   // Sensor data callbacks
   void laserScanCallback(const sensor_msgs::msg::LaserScan::SharedPtr scan, 
@@ -45,10 +54,7 @@ private:
   
   // Footprint checking utilities
   bool isPointInsideRobotFootprint(double x, double y, const std::string& exclude_robot_id);
-  bool isPointInsidePolygon(double x, double y, const std::vector<geometry_msgs::msg::Point32>& polygon);
-  geometry_msgs::msg::Polygon transformFootprintToGlobal(
-    const geometry_msgs::msg::Polygon& footprint, 
-    const geometry_msgs::msg::Pose& robot_pose);
+  
   
   // Data storage
   std::vector<rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr> laser_subs_;

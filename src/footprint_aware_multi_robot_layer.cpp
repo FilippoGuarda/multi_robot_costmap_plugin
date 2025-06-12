@@ -116,6 +116,7 @@ void FootprintAwareMultiRobotLayer::updateCosts(nav2_costmap_2d::Costmap2D& mast
     // Process each point in the cloud
     sensor_msgs::PointCloud2Iterator<float> iter_x(cloud, "x");
     sensor_msgs::PointCloud2Iterator<float> iter_y(cloud, "y");
+
     
     for (; iter_x != iter_x.end(); ++iter_x, ++iter_y) {
       double point_x = *iter_x;
@@ -129,7 +130,8 @@ void FootprintAwareMultiRobotLayer::updateCosts(nav2_costmap_2d::Costmap2D& mast
       // Mark obstacle in costmap
       unsigned int mx, my;
       if (master_grid.worldToMap(point_x, point_y, mx, my)) {
-        if (mx >= min_i && mx <= max_i && my >= min_j && my <= max_j) {
+        if (static_cast<int>(mx) >= min_i && static_cast<int>(mx) <= max_i && 
+        static_cast<int>(my) >= min_j && static_cast<int>(my) <= max_j){
           master_grid.setCost(mx, my, nav2_costmap_2d::LETHAL_OBSTACLE);
         }
       }
@@ -200,6 +202,21 @@ bool FootprintAwareMultiRobotLayer::isPointInsidePolygon(double x, double y,
   }
   
   return inside;
+}
+
+geometry_msgs::msg::Polygon FootprintAwareMultiRobotLayer::addFootprintPadding(
+    const geometry_msgs::msg::Polygon& footprint, double padding)
+{
+  geometry_msgs::msg::Polygon padded = footprint;
+  // Simple uniform padding logic (expand points radially)
+  for (auto& pt : padded.points) {
+    double mag = std::hypot(pt.x, pt.y);
+    if (mag > 1e-6) {
+      pt.x *= (mag + padding) / mag;
+      pt.y *= (mag + padding) / mag;
+    }
+  }
+  return padded;
 }
 
 geometry_msgs::msg::Polygon FootprintAwareMultiRobotLayer::transformFootprintToGlobal(

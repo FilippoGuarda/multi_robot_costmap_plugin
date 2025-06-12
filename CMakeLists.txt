@@ -53,13 +53,14 @@ pluginlib_export_plugin_description_file(nav2_costmap_2d plugins.xml)
 
 # Install
 install(TARGETS ${PROJECT_NAME}
+  EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
 )
 
 install(DIRECTORY include/
-  DESTINATION include/
+  DESTINATION include/${PROJECT_NAME}
 )
 
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
@@ -81,9 +82,7 @@ if(BUILD_TESTING)
   )
 endif()
 
-ament_export_include_directories(include)
-ament_export_libraries(${PROJECT_NAME})
 ament_export_dependencies(${dependencies})
-ament_export_targets(${PROJECT_NAME})
+ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 
 ament_package()

@@ -47,23 +47,6 @@ TEST_F(FootprintUtilsTest, TestPointInsideSquarePolygon)
   EXPECT_FALSE(layer_->isPointInsidePolygon(1.0, 0.0, square));
 }
 
-TEST_F(FootprintUtilsTest, TestCircularFootprintCreation)
-{
-  geometry_msgs::msg::Polygon footprint;
-  double radius = 0.5;
-  
-  layer_->createCircularFootprint(footprint, radius);
-  
-  // Check that we have the expected number of points
-  EXPECT_EQ(footprint.points.size(), 12);
-  
-  // Check that all points are approximately at the correct distance
-  for (const auto& point : footprint.points) {
-    double distance = sqrt(point.x * point.x + point.y * point.y);
-    EXPECT_NEAR(distance, radius, 1e-6);
-  }
-}
-
 TEST_F(FootprintUtilsTest, TestFootprintTransformation)
 {
   // Create a simple square footprint

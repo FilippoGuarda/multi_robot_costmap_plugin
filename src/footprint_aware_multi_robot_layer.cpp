@@ -24,6 +24,15 @@ FootprintAwareMultiRobotLayer::FootprintAwareMultiRobotLayer()
   // Constructor implementation
 }
 
+FootprintAwareMultiRobotLayer::~FootprintAwareMultiRobotLayer()
+{
+  // This is where your cleanup logic lives.
+  laser_subs_.clear();
+  pose_subs_.clear();
+  latest_scans_.clear();
+  robot_poses_.clear();
+}
+
 void FootprintAwareMultiRobotLayer::onInitialize()
 {
   auto node = node_.lock();
@@ -155,11 +164,10 @@ void FootprintAwareMultiRobotLayer::updateCosts(nav2_costmap_2d::Costmap2D& mast
 
 void FootprintAwareMultiRobotLayer::reset()
 {
-  // Clear stored scan data
+  // Clear all stored data to reset the layer's state.
   latest_scans_.clear();
-  // Note: Don't clear robot_poses_ as they're needed for footprint filtering
+  robot_poses_.clear(); 
 }
-
 // Callback implementations
 void FootprintAwareMultiRobotLayer::laserScanCallback(
   const sensor_msgs::msg::LaserScan::SharedPtr scan, 

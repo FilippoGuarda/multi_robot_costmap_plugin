@@ -37,7 +37,7 @@ class FootprintAwareMultiRobotLayer : public nav2_costmap_2d::CostmapLayer
 {
 public:
   FootprintAwareMultiRobotLayer();
-  virtual ~FootprintAwareMultiRobotLayer() = default;
+  ~FootprintAwareMultiRobotLayer() override;
   
   // Core Layer interface methods - REQUIRED
   void onInitialize() override;

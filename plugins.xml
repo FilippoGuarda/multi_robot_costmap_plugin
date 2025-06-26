@@ -1,10 +1,5 @@
-<library path="multi_robot_costmap_plugin">
-  <class name="multi_robot_costmap_plugin/FootprintAwareMultiRobotLayer" 
-         type="multi_robot_costmap_plugin::FootprintAwareMultiRobotLayer" 
-         base_class_type="nav2_costmap_2d::Layer">
-    <description>
-      A costmap layer that shares obstacle information between multiple robots 
-      while filtering out obstacles that are actually other robots based on their footprints.
-    </description>
+<library path="multi_robot_layer">
+  <class type="multi_robot_costmap_plugin::MultiRobotLayer" base_class_type="nav2_costmap_2d::Layer">
+    <description>Multi-robot obstacle sharing layer for Nav2 costmaps</description>
   </class>
 </library>

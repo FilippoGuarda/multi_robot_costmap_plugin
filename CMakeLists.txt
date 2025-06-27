@@ -11,7 +11,7 @@ find_package(rclcpp REQUIRED)
 find_package(nav2_costmap_2d REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
-find_package(nav2_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -30,7 +30,7 @@ ament_target_dependencies(multi_robot_layer
   nav2_costmap_2d
   geometry_msgs
   sensor_msgs
-  nav2_msgs
+  nav_msgs
   tf2
   tf2_ros
   tf2_geometry_msgs
@@ -47,7 +47,7 @@ ament_target_dependencies(global_costmap_fusion_lib
   nav2_costmap_2d
   geometry_msgs
   sensor_msgs
-  nav2_msgs
+  nav_msgs
   tf2
   tf2_ros
   tf2_geometry_msgs
@@ -85,8 +85,11 @@ install(FILES multi_robot_plugins.xml
   DESTINATION share/${PROJECT_NAME}
 )
 
+pluginlib_export_plugin_description_file(nav2_costmap_2d multi_robot_plugins.xml)
+
 install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
+  OPTIONAL
 )
 
 # Export
@@ -97,7 +100,7 @@ ament_export_dependencies(
   nav2_costmap_2d
   geometry_msgs
   sensor_msgs
-  nav2_msgs
+  nav_msgs
   tf2
   tf2_ros
   tf2_geometry_msgs

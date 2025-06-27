@@ -13,8 +13,12 @@
 // limitations under the License.
 
 #include "multi_robot_costmap_plugin/multi_robot_layer.hpp"
-#include <nav2_costmap_2d/costmap_math.hpp>
+#include "nav2_costmap_2d/costmap_math.hpp"
+#include "nav2_costmap_2d/footprint.hpp"
 #include <pluginlib/class_list_macros.hpp>
+
+using nav2_costmap_2d::LETHAL_OBSTACLE;
+using nav2_costmap_2d::NO_INFORMATION;
 
 PLUGINLIB_EXPORT_CLASS(multi_robot_costmap_plugin::MultiRobotLayer, nav2_costmap_2d::Layer)
 
@@ -28,6 +32,10 @@ MultiRobotLayer::MultiRobotLayer()
   last_max_x_(std::numeric_limits<float>::max()),
   last_max_y_(std::numeric_limits<float>::max())
 {
+  // Initialize robot pose variables
+  robot_x_ = 0.0;
+  robot_y_ = 0.0;
+  robot_yaw_ = 0.0;
 }
 
 MultiRobotLayer::~MultiRobotLayer()
@@ -41,31 +49,31 @@ void MultiRobotLayer::onInitialize()
     throw std::runtime_error("Failed to lock node");
   }
 
-  declareParameter("update_topic", rclcpp::ParameterValue("/shared_costmap_updates"));
+  declareParameter("enabled", rclcpp::ParameterValue(true));
+  declareParameter("shared_grid_topic", rclcpp::ParameterValue("/shared_obstacles_grid"));
   declareParameter("robot_namespace", rclcpp::ParameterValue("robot1"));
   declareParameter("robot_radius", rclcpp::ParameterValue(0.3));
   declareParameter("exclusion_buffer", rclcpp::ParameterValue(0.5));
-  declareParameter("max_update_age", rclcpp::ParameterValue(5.0));
 
-  node->get_parameter(name_ + "." + "update_topic", update_topic_);
+  node->get_parameter(name_ + "." + "enabled", enabled_);
+  node->get_parameter(name_ + "." + "shared_grid_topic", shared_grid_topic_);
   node->get_parameter(name_ + "." + "robot_namespace", robot_namespace_);
   node->get_parameter(name_ + "." + "robot_radius", robot_radius_);
   node->get_parameter(name_ + "." + "exclusion_buffer", exclusion_buffer_);
-  node->get_parameter(name_ + "." + "max_update_age", max_update_age_);
 
-  // Subscribe to shared costmap updates
-  update_sub_ = node->create_subscription<nav2_msgs::msg::CostmapUpdate>(
-    update_topic_,
+  // Subscribe to shared obstacles grid
+  grid_sub_ = node->create_subscription<nav_msgs::msg::OccupancyGrid>(
+    shared_grid_topic_,
     rclcpp::QoS(10).reliable(),
-    std::bind(&MultiRobotLayer::costmapUpdateCallback, this, std::placeholders::_1));
+    std::bind(&MultiRobotLayer::sharedGridCallback, this, std::placeholders::_1));
+
+  need_recalculation_ = false;
+  current_ = true;
 
   RCLCPP_INFO(
     node->get_logger(),
     "MultiRobotLayer initialized for robot: %s, listening on topic: %s",
-    robot_namespace_.c_str(), update_topic_.c_str());
-
-  current_ = true;
-  enabled_ = true;
+    robot_namespace_.c_str(), shared_grid_topic_.c_str());
 }
 
 void MultiRobotLayer::updateBounds(
@@ -74,34 +82,35 @@ void MultiRobotLayer::updateBounds(
 {
   if (!enabled_) return;
 
-  clearOldUpdates();
-
-  std::lock_guard<std::mutex> lock(update_mutex_);
-
-  if (pending_updates_.empty() && !need_recalculation_) {
-    return;
-  }
+  // Store robot pose for use in updateCosts
+  robot_x_ = robot_x;
+  robot_y_ = robot_y;
+  robot_yaw_ = robot_yaw;
 
   if (need_recalculation_) {
-    *min_x = std::min(*min_x, last_min_x_);
-    *min_y = std::min(*min_y, last_min_y_);
-    *max_x = std::max(*max_x, last_max_x_);
-    *max_y = std::max(*max_y, last_max_y_);
+    last_min_x_ = *min_x;
+    last_min_y_ = *min_y;
+    last_max_x_ = *max_x;
+    last_max_y_ = *max_y;
+    *min_x = -std::numeric_limits<float>::max();
+    *min_y = -std::numeric_limits<float>::max();
+    *max_x = std::numeric_limits<float>::max();
+    *max_y = std::numeric_limits<float>::max();
+    need_recalculation_ = false;
+  } else {
+    double tmp_min_x = last_min_x_;
+    double tmp_min_y = last_min_y_;
+    double tmp_max_x = last_max_x_;
+    double tmp_max_y = last_max_y_;
+    last_min_x_ = *min_x;
+    last_min_y_ = *min_y;
+    last_max_x_ = *max_x;
+    last_max_y_ = *max_y;
+    *min_x = std::min(tmp_min_x, *min_x);
+    *min_y = std::min(tmp_min_y, *min_y);
+    *max_x = std::max(tmp_max_x, *max_x);
+    *max_y = std::max(tmp_max_y, *max_y);
   }
-
-  for (const auto& cell : pending_updates_) {
-    if (shouldApplyUpdate(cell, robot_x, robot_y)) {
-      *min_x = std::min(*min_x, cell.x - robot_radius_);
-      *min_y = std::min(*min_y, cell.y - robot_radius_);
-      *max_x = std::max(*max_x, cell.x + robot_radius_);
-      *max_y = std::max(*max_y, cell.y + robot_radius_);
-    }
-  }
-
-  last_min_x_ = *min_x;
-  last_min_y_ = *min_y;
-  last_max_x_ = *max_x;
-  last_max_y_ = *max_y;
 }
 
 void MultiRobotLayer::updateCosts(
@@ -110,38 +119,57 @@ void MultiRobotLayer::updateCosts(
 {
   if (!enabled_) return;
 
-  std::lock_guard<std::mutex> lock(update_mutex_);
+  std::lock_guard<std::mutex> lock(grid_mutex_);
+
+  if (!latest_shared_grid_) {
+    return;
+  }
 
   auto node = node_.lock();
   if (!node) return;
 
-  // Get current robot position
-  double robot_x = 0.0, robot_y = 0.0;
-  if (layered_costmap_->getRobotPose(robot_x, robot_y)) {
-    
-    // Apply pending updates
-    for (const auto& cell : pending_updates_) {
-      if (shouldApplyUpdate(cell, robot_x, robot_y)) {
-        unsigned int mx, my;
-        if (master_grid.worldToMap(cell.x, cell.y, mx, my)) {
-          if (mx >= static_cast<unsigned int>(min_i) && mx <= static_cast<unsigned int>(max_i) &&
-              my >= static_cast<unsigned int>(min_j) && my <= static_cast<unsigned int>(max_j)) {
-            master_grid.setCost(mx, my, cell.cost);
-          }
+  // Use stored robot position from updateBounds
+  double robot_x = robot_x_;
+  double robot_y = robot_y_;
+
+  // Fix window coordinates with map size if necessary
+  min_i = std::max(0, min_i);
+  min_j = std::max(0, min_j);
+  max_i = std::min(static_cast<int>(master_grid.getSizeInCellsX()), max_i);
+  max_j = std::min(static_cast<int>(master_grid.getSizeInCellsY()), max_j);
+
+  // Process shared grid obstacles
+  const auto& shared_grid = latest_shared_grid_;
+
+  for (int j = min_j; j < max_j; j++) {
+    for (int i = min_i; i < max_i; i++) {
+      // Convert master grid coordinates to world coordinates
+      double world_x, world_y;
+      master_grid.mapToWorld(i, j, world_x, world_y);
+
+      // Convert world coordinates to shared grid coordinates
+      int shared_x = static_cast<int>((world_x - shared_grid->info.origin.position.x) / shared_grid->info.resolution);
+      int shared_y = static_cast<int>((world_y - shared_grid->info.origin.position.y) / shared_grid->info.resolution);
+
+      // Check bounds in shared grid
+      if (shared_x >= 0 && shared_x < static_cast<int>(shared_grid->info.width) &&
+          shared_y >= 0 && shared_y < static_cast<int>(shared_grid->info.height)) {
+
+        int shared_index = shared_y * shared_grid->info.width + shared_x;
+
+        // If there's an obstacle in the shared grid and it's not too close to current robot
+        if (shared_grid->data[shared_index] > 50 && shouldApplyObstacle(world_x, world_y, robot_x, robot_y)) {
+          master_grid.setCost(i, j, LETHAL_OBSTACLE);
         }
       }
     }
   }
-
-  pending_updates_.clear();
-  need_recalculation_ = false;
-  last_update_time_ = node->now();
 }
 
 void MultiRobotLayer::reset()
 {
-  std::lock_guard<std::mutex> lock(update_mutex_);
-  pending_updates_.clear();
+  std::lock_guard<std::mutex> lock(grid_mutex_);
+  latest_shared_grid_.reset();
   need_recalculation_ = true;
 }
 
@@ -150,52 +178,20 @@ void MultiRobotLayer::onFootprintChanged()
   need_recalculation_ = true;
 }
 
-void MultiRobotLayer::costmapUpdateCallback(const nav2_msgs::msg::CostmapUpdate::SharedPtr msg)
+void MultiRobotLayer::sharedGridCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
 {
-  std::lock_guard<std::mutex> lock(update_mutex_);
-  
-  auto node = node_.lock();
-  if (!node) return;
-
-  // Convert and store updates
-  for (const auto& cell : msg->cells) {
-    CostmapCell new_cell;
-    new_cell.x = cell.x;
-    new_cell.y = cell.y;
-    new_cell.cost = cell.cost;
-    new_cell.timestamp = node->now();
-    pending_updates_.push_back(new_cell);
-  }
-
+  std::lock_guard<std::mutex> lock(grid_mutex_);
+  latest_shared_grid_ = msg;
   need_recalculation_ = true;
 }
 
-bool MultiRobotLayer::shouldApplyUpdate(const CostmapCell& cell, double robot_x, double robot_y)
+bool MultiRobotLayer::shouldApplyObstacle(double obs_x, double obs_y, double robot_x, double robot_y)
 {
-  // Check if update is too close to current robot
-  double dx = cell.x - robot_x;
-  double dy = cell.y - robot_y;
+  double dx = obs_x - robot_x;
+  double dy = obs_y - robot_y;
   double distance = sqrt(dx*dx + dy*dy);
-  
+
   return distance > (robot_radius_ + exclusion_buffer_);
 }
 
-void MultiRobotLayer::clearOldUpdates()
-{
-  auto node = node_.lock();
-  if (!node) return;
-
-  std::lock_guard<std::mutex> lock(update_mutex_);
-  
-  auto current_time = node->now();
-  auto max_age = rclcpp::Duration::from_seconds(max_update_age_);
-  
-  pending_updates_.erase(
-    std::remove_if(pending_updates_.begin(), pending_updates_.end(),
-      [current_time, max_age](const CostmapCell& cell) {
-        return (current_time - cell.timestamp) > max_age;
-      }),
-    pending_updates_.end());
-}
-
-}  // namespace multi_robot_costmap_plugin
+} // namespace multi_robot_costmap_plugin

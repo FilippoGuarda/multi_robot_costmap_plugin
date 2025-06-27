@@ -18,15 +18,12 @@
 #include <rclcpp/rclcpp.hpp>
 #include <nav2_costmap_2d/layer.hpp>
 #include <nav2_costmap_2d/layered_costmap.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
-#include <nav2_msgs/msg/costmap_update.hpp>
-#include <sensor_msgs/msg/laser_scan.hpp>
-#include <tf2_ros/buffer.hpp>
-#include <tf2_ros/transform_listener.hpp>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <pluginlib/class_list_macros.hpp>
 #include <mutex>
-#include <vector>
 #include <string>
+#include <memory>
 
 namespace multi_robot_costmap_plugin
 {
@@ -46,35 +43,31 @@ public:
     int min_i, int min_j, int max_i, int max_j) override;
   virtual void reset() override;
   virtual void onFootprintChanged() override;
+  virtual bool isClearable() override { return false; }
 
 private:
-  struct CostmapCell {
-    double x, y;
-    unsigned char cost;
-    rclcpp::Time timestamp;
-  };
+  // Robot pose storage
+  double robot_x_;
+  double robot_y_;
+  double robot_yaw_;
 
-  void costmapUpdateCallback(const nav2_msgs::msg::CostmapUpdate::SharedPtr msg);
-  bool shouldApplyUpdate(const CostmapCell& cell, double robot_x, double robot_y);
-  void clearOldUpdates();
+  void sharedGridCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
+  bool shouldApplyObstacle(double obs_x, double obs_y, double robot_x, double robot_y);
 
-  rclcpp::Subscription<nav2_msgs::msg::CostmapUpdate>::SharedPtr update_sub_;
-  
-  std::vector<CostmapCell> pending_updates_;
-  std::mutex update_mutex_;
-  
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr grid_sub_;
+  nav_msgs::msg::OccupancyGrid::SharedPtr latest_shared_grid_;
+  std::mutex grid_mutex_;
+
   std::string robot_namespace_;
-  std::string update_topic_;
+  std::string shared_grid_topic_;
   double robot_radius_;
   double exclusion_buffer_;
-  double max_update_age_;
-  
+
   rclcpp::Time last_update_time_;
   bool need_recalculation_;
-  
   double last_min_x_, last_min_y_, last_max_x_, last_max_y_;
 };
 
-}  // namespace multi_robot_costmap_plugin
+} // namespace multi_robot_costmap_plugin
 
-#endif  // MULTI_ROBOT_COSTMAP_PLUGIN__MULTI_ROBOT_LAYER_HPP_
+#endif // MULTI_ROBOT_COSTMAP_PLUGIN__MULTI_ROBOT_LAYER_HPP_

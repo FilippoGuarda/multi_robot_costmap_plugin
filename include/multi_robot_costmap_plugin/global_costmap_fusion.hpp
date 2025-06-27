@@ -12,21 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 #ifndef MULTI_ROBOT_COSTMAP_PLUGIN__GLOBAL_COSTMAP_FUSION_HPP_
 #define MULTI_ROBOT_COSTMAP_PLUGIN__GLOBAL_COSTMAP_FUSION_HPP_
 
 #include <rclcpp/rclcpp.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
-#include <nav2_msgs/msg/costmap_update.hpp>
-#include <tf2_ros/buffer.hpp>
-#include <tf2_ros/transform_listener.hpp>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <geometry_msgs/msg/point.hpp>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
+#include <mutex>
 #include <map>
 #include <vector>
 #include <string>
-#include <mutex>
 
 namespace multi_robot_costmap_plugin
 {
@@ -52,7 +51,7 @@ private:
     const sensor_msgs::msg::LaserScan::SharedPtr scan,
     size_t point_index,
     const geometry_msgs::msg::PoseStamped& robot_pose);
-  void publishCostmapUpdate(const std::vector<nav2_msgs::msg::CostmapCell>& cells);
+  void publishSharedObstacles();
   void checkRobotActivity();
 
   // Parameters
@@ -62,9 +61,12 @@ private:
   double update_frequency_;
   double robot_timeout_;
   std::string global_frame_;
+  double grid_resolution_;
+  double grid_width_;
+  double grid_height_;
 
   // Publishers and subscribers
-  rclcpp::Publisher<nav2_msgs::msg::CostmapUpdate>::SharedPtr update_pub_;
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr grid_pub_;
   std::map<std::string, rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr> scan_subs_;
   std::map<std::string, rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr> pose_subs_;
 
@@ -72,14 +74,19 @@ private:
   std::map<std::string, RobotInfo> robot_info_;
   std::mutex robot_info_mutex_;
 
+  // Shared obstacle storage
+  std::vector<geometry_msgs::msg::Point> shared_obstacles_;
+  std::mutex obstacles_mutex_;
+
   // TF
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
   // Timers
   rclcpp::TimerBase::SharedPtr activity_check_timer_;
+  rclcpp::TimerBase::SharedPtr publish_timer_;
 };
 
-}  // namespace multi_robot_costmap_plugin
+} // namespace multi_robot_costmap_plugin
 
-#endif  // MULTI_ROBOT_COSTMAP_PLUGIN__GLOBAL_COSTMAP_FUSION_HPP_
+#endif // MULTI_ROBOT_COSTMAP_PLUGIN__GLOBAL_COSTMAP_FUSION_HPP_

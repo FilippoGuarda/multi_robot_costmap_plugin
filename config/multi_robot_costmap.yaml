@@ -1,14 +1,26 @@
 # Global Costmap Fusion Node Configuration
+# GlobalCostmapFusion Configuration
+
 global_costmap_fusion:
   ros__parameters:
     robots: ["robot1", "robot2", "robot3", "robot4", "robot5", "robot6"]
-    robot_radius: 0.35
-    exclusion_buffer: 0.5
-    update_frequency: 10.0
-    robot_timeout: 5.0
-    global_frame: "map"
-    output_topic: "/shared_costmap_updates"
-    scan_topic: scan
+    robot_radius: 0.3          # Radius of each robot in meters
+    exclusion_buffer: 0.5      # Additional buffer around robots to exclude from obstacle detection
+    
+    # Update frequencies
+    update_frequency: 10.0     # Hz - How often to publish shared obstacles grid
+    robot_timeout: 5.0         # Seconds - Time before marking robot as inactive
+    
+    # Frame and topic configuration
+    global_frame: "map"        # Global reference frame
+    output_topic: /shared_obstacles_grid  # Topic to publish shared obstacles
+    scan_topic: scan        # Laser scan topic suffix (will be /<robot_id>/scan)
+    
+    # Grid configuration
+    grid_resolution: 0.05      # meters per pixel
+    grid_width: 100.0          # meters - total width of occupancy grid
+    grid_height: 100.0         # meters - total height of occupancy grid
+
 
 #======================================================================
 # Example configuration for one robot

@@ -1,4 +1,29 @@
-# Multi-Robot Costmap Plugin - Build and Usage Instructions
+# DISCLAIMER
+
+This is still very much a work in progress, if you want to contribute please fork the project and request a pull with your changes.
+There are some features that I intend to add once the project is stable enough, for now I will only focus on application on Humble,
+some help porting this plugin to newer ROS versions would be highly appreciated.
+
+# Multi-Robot Costmap Plugin for Nav2
+
+A comprehensive ROS2 package that provides multi-robot obstacle sharing capabilities for the Nav2 navigation stack. This plugin enables robots in a fleet to share detected obstacles with each other, improving collective navigation awareness and safety.
+
+## Overview
+
+The Multi-Robot Costmap Plugin consists of two main components:
+
+1. **MultiRobotLayer**: A Nav2 costmap plugin that integrates shared obstacle data into individual robot costmaps
+2. **GlobalCostmapFusion**: A standalone ROS2 node that collects laser scan data from multiple robots and publishes a unified obstacle grid
+
+## Features
+
+- **Real-time obstacle sharing** between multiple robots
+- **TF2-based robot pose tracking** for accurate coordinate transformations
+- **Automatic map parameter detection** from map server or service
+- **Configurable robot exclusion zones** to prevent robots from avoiding each other
+- **Thread-safe operation** with mutex-protected data structures
+- **Robust error handling** with transform timeout management
+- **Compatible with Nav2 lifecycle management**
 
 ## Package Structure
 
@@ -6,201 +31,335 @@
 multi_robot_costmap_plugin/
 ├── CMakeLists.txt
 ├── package.xml
-├── plugins.xml
+├── plugin.xml                          # Plugin registration file
 ├── include/
 │   └── multi_robot_costmap_plugin/
-│       └── footprint_aware_multi_robot_layer.hpp
+│       ├── global_costmap_fusion.hpp   # GlobalCostmapFusion node header
+│       └── multi_robot_layer.hpp       # MultiRobotLayer plugin header
 ├── src/
-│   └── footprint_aware_multi_robot_layer.cpp
-├── launch/
-│   └── multi_robot_demo.launch.py
+│   ├── global_costmap_fusion.cpp       # GlobalCostmapFusion implementation
+│   ├── global_costmap_fusion_node.cpp  # Node executable wrapper
+│   └── multi_robot_layer.cpp           # MultiRobotLayer implementation
 ├── config/
-│   └── nav2_params.yaml
-├── test/
-│   └── test_footprint_utils.cpp
-└── README.md
+│   ├── global_costmap_fusion.yaml      # GlobalCostmapFusion configuration
+│   └── nav2_params.yaml                # Nav2 costmap configuration example
+└── launch/
+    └── multi_robot_demo.launch.py      # Demo launch file
 ```
 
-## Building Package
+## Dependencies
 
-### Option 1: Build as Standalone Package
+### System Requirements
+- ROS2 Humble (tested) or later
+- Nav2 navigation stack
+- TF2 for coordinate transformations
 
-1. **Create a new ROS2 workspace or navigate to existing one:**
-   ```bash
-   mkdir -p ~/multi_robot_ws/src
-   cd ~/multi_robot_ws/src
-   ```
+### ROS2 Package Dependencies
+- `rclcpp`
+- `nav2_costmap_2d`
+- `nav_msgs`
+- `sensor_msgs`
+- `geometry_msgs`
+- `tf2_ros`
+- `tf2_geometry_msgs`
+- `pluginlib`
 
-2. **Clone or create package directory:**
-   ```bash
-   # If creating from scratch, create the directory and copy all files
-   mkdir multi_robot_costmap_plugin
-   cd multi_robot_costmap_plugin
-   # Copy all generated files into this directory
-   ```
+## Installation
 
-3. **Build package:**
-   ```bash
-   cd ~/multi_robot_ws
-   colcon build --packages-select multi_robot_costmap_plugin
-   source install/setup.bash
-   ```
+### Building from Source
 
-4. **Run tests (optional):**
-   ```bash
-   colcon test --packages-select multi_robot_costmap_plugin
-   colcon test-result --verbose
-   ```
+1. **Create a workspace and clone the repository:**
+```bash
+mkdir -p ~/multi_robot_ws/src
+cd ~/multi_robot_ws/src
+git clone https://github.com/FilippoGuarda/multi_robot_costmap_plugin.git
+```
 
-### Option 2: Add to Existing Navigation Package
+2. **Install dependencies:**
+```bash
+cd ~/multi_robot_ws
+rosdep install --from-paths src --ignore-src -r -y
+```
 
-If the plugin is to be integrated into an existing navigation package:
+3. **Build the package:**
+```bash
+colcon build --packages-select multi_robot_costmap_plugin
+source install/setup.bash
+```
 
-1. **Copy source files to an existing package:**
-   ```bash
-   # Assuming the package is called 'my_nav_package'
-   cp include/multi_robot_costmap_plugin/* ~/pkg_workspace/src/my_nav_package/include/my_nav_package/
-   cp src/* ~/pkg_workspace/src/my_nav_package/src/
-   ```
+4. **Verify installation:**
+```bash
+ros2 pkg list | grep multi_robot_costmap_plugin
+```
 
-2. **Update existing CMakeLists.txt:**
-   Add dependencies and source file:
-   ```cmake
-   find_package(laser_geometry REQUIRED)
-   # Add to dependencies list
-   
-   add_library(${PROJECT_NAME} SHARED
-     # ... existing sources
-     src/footprint_aware_multi_robot_layer.cpp
-   )
-   ```
+## Configuration
 
-3. **Update package.xml:**
-   Add required dependencies from this package.xml
+### GlobalCostmapFusion Node Configuration
 
-4. **Create or update plugins.xml in package:**
-   Add plugin definition to existing plugins.xml
+Create a configuration file `config/global_costmap_fusion.yaml`:
+
+```yaml
+global_costmap_fusion:
+  ros__parameters:
+    # Robot fleet configuration
+    robots: ["robot1", "robot2", "robot3", "robot4", "robot5", "robot6"]
+    
+    # Physical robot parameters
+    robot_radius: 0.3              # Robot radius in meters
+    exclusion_buffer: 0.5          # Additional buffer around robots
+    
+    # Update rates
+    update_frequency: 10.0         # Hz - obstacle grid publishing rate
+    robot_timeout: 5.0             # Seconds before marking robot inactive
+    
+    # Frame and topic configuration
+    global_frame: "map"            # Global reference frame
+    output_topic: "/shared_obstacles_grid"
+    scan_topic: "scan"             # Laser scan topic suffix
+    map_topic: "/map"              # Map topic for parameter extraction
+    map_service: "/map_server/map" # Map service fallback
+    base_frame_suffix: "base_footprint"  # Robot base frame suffix
+```
+
+### Nav2 Costmap Configuration
+
+Add the MultiRobotLayer to your Nav2 costmap configuration:
+
+```yaml
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      plugins: ["static_layer", "multi_robot_layer", "inflation_layer"]
+      
+      multi_robot_layer:
+        plugin: "multi_robot_costmap_plugin/MultiRobotLayer"
+        enabled: true
+        robot_namespaces: ["robot1", "robot2", "robot3", "robot4", "robot5", "robot6"]
+        obstacle_max_range: 2.5
+        obstacle_min_range: 0.3
+        footprint_padding: 0.1
+        default_robot_radius: 0.3
+```
 
 ## Usage
 
-### Method 1: Using Launch File
+### Method 1: Standalone Node Launch
 
 ```bash
-# Source workspace
+# Source the workspace
 source ~/multi_robot_ws/install/setup.bash
 
-# Launch with default parameters
-ros2 launch multi_robot_costmap_plugin multi_robot_demo.launch.py
+# Launch the GlobalCostmapFusion node
+ros2 run multi_robot_costmap_plugin global_costmap_fusion_node \
+  --ros-args --params-file config/global_costmap_fusion.yaml
 
-# Launch with custom robot namespaces
-ros2 launch multi_robot_costmap_plugin multi_robot_demo.launch.py \
-  robot_namespaces:="['robot_a', 'robot_b', 'robot_c']"
+# Launch your Nav2 stack with the MultiRobotLayer configured
+ros2 launch your_nav_package nav2_launch.py
 ```
 
-### Method 2: Integrating with Existing Nav2 Configuration
+### Method 2: Integrated Launch File
 
-1. **Add plugin to the existing Nav2 parameter file:**
-   ```yaml
-   local_costmap:
-     local_costmap:
-       ros__parameters:
-         plugins: ["voxel_layer", "inflation_layer", "multi_robot_layer"]
-         # ... other plugins
-         multi_robot_layer:
-           plugin: "multi_robot_costmap_plugin/FootprintAwareMultiRobotLayer"
-           enabled: True
-           robot_namespaces: ["robot1", "robot2", "robot3"]
-           obstacle_max_range: 2.5
-           obstacle_min_range: 0.0
-           global_frame: "map"
-           footprint_padding: 0.1
-           default_robot_radius: 0.3
-   ```
+```python
+# Example launch file integration
+from launch import LaunchDescription
+from launch_ros.actions import Node
+from ament_index_python.packages import get_package_share_directory
+import os
 
-2. **Launch existing Nav2 stack:**
-   ```bash
-   ros2 launch the_navigation_package the_nav_launch.py
-   ```
+def generate_launch_description():
+    config_file = os.path.join(
+        get_package_share_directory('multi_robot_costmap_plugin'),
+        'config',
+        'global_costmap_fusion.yaml'
+    )
+    
+    return LaunchDescription([
+        # GlobalCostmapFusion node
+        Node(
+            package='multi_robot_costmap_plugin',
+            executable='global_costmap_fusion_node',
+            name='global_costmap_fusion',
+            parameters=[config_file],
+            output='screen'
+        ),
+        
+        # Your Nav2 launch here...
+    ])
+```
 
-### Method 3: Manual Node Configuration
+### Method 3: Multi-Robot Fleet Launch
+
+For a complete multi-robot setup:
 
 ```bash
-# Start Nav2 with custom parameters
-ros2 run nav2_costmap_2d costmap_2d_node --ros-args \
-  --params-file ~/multi_robot_ws/src/multi_robot_costmap_plugin/config/nav2_params.yaml
+# Launch individual robots (repeat for each robot)
+ros2 launch robot_bringup robot.launch.py robot_name:=robot1
+
+# Launch the fusion node
+ros2 launch multi_robot_costmap_plugin multi_robot_demo.launch.py
+
+# Launch Nav2 for each robot with MultiRobotLayer configured
+ros2 launch nav2_bringup navigation_launch.py use_sim_time:=true
 ```
 
-## Configuration Parameters
+## Topics and Services
 
-The plugin accepts the following parameters:
+### Subscribed Topics (per robot)
+- `/{robot_id}/scan` (sensor_msgs/LaserScan) - Laser scan data
+- `/map` (nav_msgs/OccupancyGrid) - Map for parameter extraction
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `robot_namespaces` | string[] | [] | List of robot namespaces to subscribe to |
-| `obstacle_max_range` | double | 2.5 | Maximum range for obstacle detection (meters) |
-| `obstacle_min_range` | double | 0.0 | Minimum range for obstacle detection (meters) |
-| `global_frame` | string | "map" | Global reference frame |
-| `footprint_padding` | double | 0.1 | Additional padding around robot footprints (meters) |
-| `default_robot_radius` | double | 0.3 | Default robot radius when footprint is not available (meters) |
+### Published Topics
+- `/shared_obstacles_grid` (nav_msgs/OccupancyGrid) - Shared obstacle grid
 
-## Expected Topics
+### Required TF Frames (per robot)
+- `map` → `{robot_id}/odom` → `{robot_id}/base_footprint`
+- `{robot_id}/base_footprint` → `{robot_id}/laser_frame`
 
-For each robot namespace (e.g., "robot1"), the plugin expects these topics:
+### Services Used
+- `/map_server/map` (nav_msgs/GetMap) - Fallback for map parameters
 
-- `/{robot_namespace}/scan` - sensor_msgs/LaserScan
-- `/{robot_namespace}/amcl_pose` - geometry_msgs/PoseWithCovarianceStamped  
-- `/{robot_namespace}/local_costmap/published_footprint` - geometry_msgs/PolygonStamped (optional)
+## Architecture
+
+### GlobalCostmapFusion Node
+
+The fusion node operates with the following workflow:
+
+1. **Initialization**: Subscribes to map topic/service to extract grid parameters
+2. **Robot Tracking**: Uses TF2 to continuously track robot poses at 10Hz
+3. **Scan Processing**: Processes laser scans from active robots
+4. **Coordinate Transformation**: Converts scan points to global coordinates using TF2
+5. **Robot Filtering**: Excludes points within robot exclusion zones
+6. **Grid Publishing**: Publishes accumulated obstacles as an occupancy grid
+
+### MultiRobotLayer Plugin
+
+The costmap plugin integrates shared obstacle data:
+
+1. **Lifecycle Management**: Properly initializes and activates with Nav2
+2. **Data Subscription**: Subscribes to the shared obstacles grid
+3. **Costmap Integration**: Adds shared obstacles to the robot's local costmap
+4. **Thread Safety**: Ensures safe access to shared data structures
+
+## Advanced Configuration
+
+### Custom Robot Frame Configuration
+
+```yaml
+# For robots with different frame naming conventions
+global_costmap_fusion:
+  ros__parameters:
+    base_frame_suffix: "base_link"  # Instead of "base_footprint"
+```
+
+### Performance Tuning
+
+```yaml
+# Optimize for large fleets
+global_costmap_fusion:
+  ros__parameters:
+    update_frequency: 5.0          # Reduce for better performance
+    robot_timeout: 10.0            # Increase for unstable networks
+    exclusion_buffer: 0.3          # Reduce for denser operation
+```
+
+### Debug Configuration
+
+```yaml
+# Enable detailed logging
+global_costmap_fusion:
+  ros__parameters:
+    # Add to launch with --log-level debug
+```
 
 ## Troubleshooting
 
-### Common Issues:
+### Common Issues
 
-1. **Plugin not loading:**
-   ```bash
-   # Check if plugin is properly registered
-   ros2 pkg list | grep multi_robot_costmap_plugin
-   
-   # Verify plugin registration
-   ros2 run pluginlib pluginlib_headers nav2_costmap_2d
-   ```
-
-2. **Missing robot data:**
-   ```bash
-   # Check if robot topics are publishing
-   ros2 topic list | grep robot1
-   ros2 topic echo /robot1/scan --once
-   ros2 topic echo /robot1/amcl_pose --once
-   ```
-
-3. **Transform issues:**
-   ```bash
-   # Check TF tree
-   ros2 run tf2_tools view_frames.py
-   
-   # Verify transforms between robot frames
-   ros2 run tf2_ros tf2_echo map robot1/base_link
-   ```
-
-4. **Performance issues:**
-   - Reduce `obstacle_max_range` to limit processing
-   - Decrease costmap update frequency
-   - Reduce number of laser scan points processed
-
-### Debug Information:
-
-Enable debug logging to see plugin activity:
+**1. Plugin Not Loading**
 ```bash
-ros2 run nav2_costmap_2d costmap_2d_node --ros-args \
-  --log-level multi_robot_costmap_plugin:=DEBUG
+# Check if plugin is registered
+ros2 pkg list | grep multi_robot_costmap_plugin
+
+# Verify plugin.xml is correct
+cat install/multi_robot_costmap_plugin/share/multi_robot_costmap_plugin/plugin.xml
 ```
 
-## Integration with Multi-Robot Task Allocation
+**2. No Shared Obstacles Published**
+```bash
+# Check if robots are active
+ros2 topic echo /shared_obstacles_grid --once
 
-This plugin is designed to work seamlessly with a multi robot task allocation system. It will:
+# Verify laser scan topics
+ros2 topic list | grep scan
+ros2 topic hz /robot1/scan
+```
 
-1. **Share obstacle information** between all robots in the fleet
-2. **Filter out robot detections** to prevent robots from avoiding each other unnecessarily  
-3. **Maintain real-time performance** for dynamic replanning
-4. **Provide safety margins** through configurable footprint padding
+**3. Transform Errors**
+```bash
+# Check TF tree
+ros2 run tf2_tools view_frames
 
-The plugin automatically integrates with Nav2's planning and control systems, so the existing task allocation logic should continue to work without modification while benefiting from improved multi-robot obstacle sharing.
+# Verify robot transforms
+ros2 run tf2_ros tf2_echo map robot1/base_footprint
+```
+
+**4. Map Parameters Not Detected**
+```bash
+# Check map availability
+ros2 topic echo /map --once
+ros2 service call /map_server/map nav_msgs/srv/GetMap
+```
+
+### Performance Issues
+
+- **High CPU usage**: Reduce `update_frequency` or `obstacle_max_range`
+- **Memory consumption**: Limit the number of obstacles accumulated
+- **Network bandwidth**: Reduce grid resolution or update frequency
+
+### Debug Commands
+
+```bash
+# Monitor node performance
+ros2 topic hz /shared_obstacles_grid
+
+# Check robot activity
+ros2 param get /global_costmap_fusion robots
+
+# Monitor transform updates
+ros2 topic echo /tf --once | grep robot1
+
+# Check costmap plugin status
+ros2 lifecycle get /global_costmap/global_costmap
+```
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature-name`
+3. Commit changes: `git commit -am 'Add feature'`
+4. Push to branch: `git push origin feature-name`
+5. Submit a pull request
+
+## License
+
+This project is licensed under the Apache License 2.0 - see the LICENSE file for details.
+
+## Citation
+
+If you use this package in your research, please cite:
+
+```bibtex
+@software{multi_robot_costmap_plugin,
+  author = {Filippo Guarda},
+  title = {Multi-Robot Costmap Plugin for Nav2},
+  year = {2025},
+  url = {https://github.com/FilippoGuarda/multi_robot_costmap_plugin}
+}
+```
+
+## Support
+
+For questions, issues, or contributions:
+- **GitHub Issues**: [Report bugs or request features](https://github.com/FilippoGuarda/multi_robot_costmap_plugin/issues)
+- **Discussions**: [Ask questions or share ideas](https://github.com/FilippoGuarda/multi_robot_costmap_plugin/discussions)
+

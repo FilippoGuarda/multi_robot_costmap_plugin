@@ -1,6 +1,7 @@
 # DISCLAIMER
 
-This is still very much a work in progress, if you want to contribute please fork the project and request a pull with your changes.
+This is still very much a work in progress, if you want to contribute please check the [Contributing Section](#contributing).  
+
 There are some features that I intend to add once the project is stable enough, for now I will only focus on application on Humble,
 some help porting this plugin to newer ROS versions would be highly appreciated.
 
@@ -20,7 +21,7 @@ The Multi-Robot Costmap Plugin consists of two main components:
 - **Real-time obstacle sharing** between multiple robots
 - **TF2-based robot pose tracking** for accurate coordinate transformations
 - **Automatic map parameter detection** from map server or service
-- **Configurable robot exclusion zones** to prevent robots from avoiding each other
+- **Configurable robot exclusion zones** to prevent robots cross-detection and controller errors
 - **Thread-safe operation** with mutex-protected data structures
 - **Robust error handling** with transform timeout management
 - **Compatible with Nav2 lifecycle management**
@@ -41,16 +42,15 @@ multi_robot_costmap_plugin/
 │   ├── global_costmap_fusion_node.cpp  # Node executable wrapper
 │   └── multi_robot_layer.cpp           # MultiRobotLayer implementation
 ├── config/
-│   ├── global_costmap_fusion.yaml      # GlobalCostmapFusion configuration
-│   └── nav2_params.yaml                # Nav2 costmap configuration example
+│   └── multi_robot_costmap.yaml        # Shared costmap configuration example
 └── launch/
-    └── multi_robot_demo.launch.py      # Demo launch file
+    └── examples_launch.py              # Demo launch file
 ```
 
 ## Dependencies
 
 ### System Requirements
-- ROS2 Humble (tested) or later
+- ROS2 Humble (tested) or later (not sure)
 - Nav2 navigation stack
 - TF2 for coordinate transformations
 
@@ -143,21 +143,7 @@ global_costmap:
 
 ## Usage
 
-### Method 1: Standalone Node Launch
-
-```bash
-# Source the workspace
-source ~/multi_robot_ws/install/setup.bash
-
-# Launch the GlobalCostmapFusion node
-ros2 run multi_robot_costmap_plugin global_costmap_fusion_node \
-  --ros-args --params-file config/global_costmap_fusion.yaml
-
-# Launch your Nav2 stack with the MultiRobotLayer configured
-ros2 launch your_nav_package nav2_launch.py
-```
-
-### Method 2: Integrated Launch File
+### Method 1: Integrated Launch File
 
 ```python
 # Example launch file integration
@@ -187,20 +173,9 @@ def generate_launch_description():
     ])
 ```
 
-### Method 3: Multi-Robot Fleet Launch
+### Method 2: Multi-Robot Fleet Launch
 
-For a complete multi-robot setup:
-
-```bash
-# Launch individual robots (repeat for each robot)
-ros2 launch robot_bringup robot.launch.py robot_name:=robot1
-
-# Launch the fusion node
-ros2 launch multi_robot_costmap_plugin multi_robot_demo.launch.py
-
-# Launch Nav2 for each robot with MultiRobotLayer configured
-ros2 launch nav2_bringup navigation_launch.py use_sim_time:=true
-```
+**Coming Soon** with complete simulation example
 
 ## Topics and Services
 
@@ -332,14 +307,6 @@ ros2 topic echo /tf --once | grep robot1
 ros2 lifecycle get /global_costmap/global_costmap
 ```
 
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature-name`
-3. Commit changes: `git commit -am 'Add feature'`
-4. Push to branch: `git push origin feature-name`
-5. Submit a pull request
-
 ## License
 
 This project is licensed under the Apache License 2.0 - see the LICENSE file for details.
@@ -356,6 +323,14 @@ If you use this package in your research, please cite:
   url = {https://github.com/FilippoGuarda/multi_robot_costmap_plugin}
 }
 ```
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature-name`
+3. Commit changes: `git commit -am 'Add feature'`
+4. Push to branch: `git push origin feature-name`
+5. Submit a pull request
 
 ## Support
 

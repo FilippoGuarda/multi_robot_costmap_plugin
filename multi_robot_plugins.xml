@@ -1,5 +1,0 @@
-<library path="multi_robot_layer">
-  <class type="multi_robot_costmap_plugin::MultiRobotLayer" base_class_type="nav2_costmap_2d::Layer">
-    <description>Multi-robot obstacle layer for Nav2 costmap that shares obstacles between robots</description>
-  </class>
-</library>

@@ -32,6 +32,7 @@ GlobalCostmapFusion::GlobalCostmapFusion(const rclcpp::NodeOptions & options)
   this->declare_parameter("grid_resolution", 0.05);
   this->declare_parameter("grid_width", 100.0);
   this->declare_parameter("grid_height", 100.0);
+  this->declare_parameter("scan_topic", "scan");
 
   // Get parameters
   robot_ids_ = this->get_parameter("robots").as_string_array();
@@ -43,6 +44,13 @@ GlobalCostmapFusion::GlobalCostmapFusion(const rclcpp::NodeOptions & options)
   grid_resolution_ = this->get_parameter("grid_resolution").as_double();
   grid_width_ = this->get_parameter("grid_width").as_double();
   grid_height_ = this->get_parameter("grid_height").as_double();
+  scan_topic_ = this->get_parameter("scan_topic").as_string();
+
+  // Verify robot ids are not empty
+  if (robot_ids_.empty()) {
+    RCLCPP_ERROR(this->get_logger(), "No robots specified in 'robots' parameter");
+    throw std::runtime_error("No robots specified");
+  }
 
   std::string output_topic = this->get_parameter("output_topic").as_string();
 
@@ -95,7 +103,7 @@ void GlobalCostmapFusion::setupSubscriptions()
     pose_subs_[robot_id] = this->create_subscription<geometry_msgs::msg::PoseStamped>(
       pose_topic, rclcpp::QoS(10), pose_callback);
 
-    // Initialize robot info - FIXED: Explicit initialization with cast
+    
     RobotInfo info;
     info.pose = geometry_msgs::msg::PoseStamped();
     info.last_update = rclcpp::Time(static_cast<int64_t>(0), RCL_ROS_TIME);
@@ -135,6 +143,7 @@ void GlobalCostmapFusion::processLaserScan(
     }
 
     new_obstacles.push_back(world_point);
+    RCLCPP_INFO(this->get_logger(), "New detection from Robot %s", robot_id.c_str());
   }
 
   // Update shared obstacles
@@ -152,6 +161,7 @@ void GlobalCostmapFusion::updateRobotPose(
   robot_info_[robot_id].pose = *msg;
   robot_info_[robot_id].last_update = this->now();
   robot_info_[robot_id].active = true;
+  RCLCPP_INFO(this->get_logger(), "Updated Robot %s Pose", robot_id.c_str());
 }
 
 bool GlobalCostmapFusion::isRobotLocation(const geometry_msgs::msg::Point& point)
@@ -198,6 +208,16 @@ geometry_msgs::msg::Point GlobalCostmapFusion::convertScanPointToWorld(
 
 void GlobalCostmapFusion::publishSharedObstacles()
 {
+
+  // This function populates and publishes the shared detection
+  // messages. When the shared obstacles array is not empty, it ingests it, then publishes
+  // before clearing
+
+  // TODO: it could be useful to use some encoding mechanism (Fourier, Gaussian ...) to 
+  // increase efficiency in information sharing, but since in the current configuration
+  // all robots are simulated on the same computer this would only increase computation time
+  // with no upsides
+
   std::lock_guard<std::mutex> lock(obstacles_mutex_);
   
   if (shared_obstacles_.empty()) {

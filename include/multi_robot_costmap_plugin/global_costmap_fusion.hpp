@@ -64,6 +64,7 @@ private:
   double grid_resolution_;
   double grid_width_;
   double grid_height_;
+  std::string scan_topic_;
 
   // Publishers and subscribers
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr grid_pub_;

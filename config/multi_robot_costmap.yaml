@@ -8,6 +8,7 @@ global_costmap_fusion:
     robot_timeout: 5.0
     global_frame: "map"
     output_topic: "/shared_costmap_updates"
+    scan_topic: scan
 
 #======================================================================
 # Example configuration for one robot

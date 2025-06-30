@@ -21,11 +21,11 @@ find_package(pluginlib REQUIRED)
 include_directories(include)
 
 # Multi-robot costmap layer plugin
-add_library(multi_robot_layer SHARED
+add_library(${PROJECT_NAME} SHARED
   src/multi_robot_layer.cpp
 )
 
-ament_target_dependencies(multi_robot_layer
+ament_target_dependencies(${PROJECT_NAME}
   rclcpp
   nav2_costmap_2d
   geometry_msgs
@@ -66,35 +66,40 @@ ament_target_dependencies(global_costmap_fusion_node
   rclcpp
 )
 
-# Install
-install(TARGETS multi_robot_layer global_costmap_fusion_lib
+# Install libraries
+install(TARGETS ${PROJECT_NAME} global_costmap_fusion_lib
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
 )
 
+# Install executable
 install(TARGETS global_costmap_fusion_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
+# Install headers
 install(DIRECTORY include/
   DESTINATION include/
 )
 
-install(FILES multi_robot_plugins.xml
+# Install plugin description file
+install(FILES plugin.xml
   DESTINATION share/${PROJECT_NAME}
 )
 
-pluginlib_export_plugin_description_file(nav2_costmap_2d multi_robot_plugins.xml)
+# Export plugin description - CRITICAL for plugin discovery
+pluginlib_export_plugin_description_file(nav2_costmap_2d plugin.xml)
 
+# Install optional directories
 install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
   OPTIONAL
 )
 
-# Export
+# Export package information
 ament_export_include_directories(include)
-ament_export_libraries(multi_robot_layer global_costmap_fusion_lib)
+ament_export_libraries(${PROJECT_NAME} global_costmap_fusion_lib)
 ament_export_dependencies(
   rclcpp
   nav2_costmap_2d

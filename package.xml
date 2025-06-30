@@ -23,6 +23,7 @@
   <test_depend>ament_lint_common</test_depend>
 
   <export>
-    <nav2_costmap_2d plugin="${prefix}/multi_robot_plugins.xml" />
+    <build_type>ament_cmake</build_type>
+    <nav2_costmap_2d plugin="${prefix}/plugin.xml" />
   </export>
 </package>

@@ -42,7 +42,7 @@ def generate_launch_description():
     
     config_file_arg = DeclareLaunchArgument(
         'config_file',
-        default_value=PathJoinSubstitution([pkg_dir, 'config', 'multi_robot_params.yaml']),
+        default_value=PathJoinSubstitution([pkg_dir, 'config', 'multi_robot_costmap.yaml']),
         description='Path to config file'
     )
 

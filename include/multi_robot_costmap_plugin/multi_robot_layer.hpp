@@ -19,11 +19,14 @@
 #include <nav2_costmap_2d/layer.hpp>
 #include <nav2_costmap_2d/layered_costmap.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
-#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <pluginlib/class_list_macros.hpp>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
+#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>  
+#include <tf2/utils.h>
 #include <mutex>
 #include <string>
-#include <memory>
 
 namespace multi_robot_costmap_plugin
 {
@@ -46,22 +49,26 @@ public:
   virtual bool isClearable() override { return false; }
 
 private:
-  // Robot pose storage
-  double robot_x_;
-  double robot_y_;
-  double robot_yaw_;
-
+  // TF2-based robot pose tracking
+  bool getRobotPose(double& x, double& y, double& yaw);
+  
   void sharedGridCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
   bool shouldApplyObstacle(double obs_x, double obs_y, double robot_x, double robot_y);
 
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr grid_sub_;
+  std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+
   nav_msgs::msg::OccupancyGrid::SharedPtr latest_shared_grid_;
   std::mutex grid_mutex_;
 
   std::string robot_namespace_;
   std::string shared_grid_topic_;
+  std::string global_frame_;
+  std::string robot_base_frame_;
   double robot_radius_;
   double exclusion_buffer_;
+  double transform_timeout_;
 
   rclcpp::Time last_update_time_;
   bool need_recalculation_;

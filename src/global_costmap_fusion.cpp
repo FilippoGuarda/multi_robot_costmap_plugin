@@ -367,7 +367,7 @@ void GlobalCostmapFusion::publishSharedObstacles()
   }
 
   grid_pub_->publish(std::move(grid_msg));
-  RCLCPP_INFO(this->get_logger(), "Published grid with %zu obstacles", shared_obstacles_.size());
+  RCLCPP_DEBUG(this->get_logger(), "Published grid with %zu obstacles", shared_obstacles_.size());
 
   // Clear processed obstacles
   shared_obstacles_.clear();

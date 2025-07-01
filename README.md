@@ -5,6 +5,12 @@ This is still very much a work in progress, if you want to contribute please che
 There are some features that I intend to add once the project is stable enough, for now I will only focus on application on Humble,
 some help porting this plugin to newer ROS versions would be highly appreciated.
 
+## Features that still need to be added
+
+- **Obstacle Permanence**: Currently the obstacles get cleaned out once none of the robots can see them anymore, ideally the obstacle detections should remain until a robots clears them out. Much like how it currently works with the nav2 obstacle layer
+- **Nav2 Goal namespace selection tool for Rviz**: Right now the only way to graphically set a goal is to manually modify the 2D goal pose functionality on rviz from the Toop Properties panel, while it's not possible to do the same with the NAV2 Goal tool.
+- **Secret one**: I'm working on the concept of this one and if it works it could become a paper, so at the moment it will stay a secret.
+
 # Multi-Robot Costmap Plugin for Nav2
 
 A comprehensive ROS2 package that provides multi-robot obstacle sharing capabilities for the Nav2 navigation stack. This plugin enables robots in a fleet to share detected obstacles with each other, improving collective navigation awareness and safety.

@@ -367,7 +367,7 @@ void GlobalCostmapFusion::publishSharedObstacles()
   }
 
   // Add obstacles on robot footprints
-  std::lock_guard<std::mutex> robot_lock(robot_info_mutex);
+  std::lock_guard<std::mutex> robot_lock(robot_info_mutex_);
   for (const auto& [robot_id, info] : robot_info_) {
     if (info.active) {
       double robot_x = info.transform.transform.translation.x;
@@ -415,7 +415,7 @@ void GlobalCostmapFusion::markRobotFootprint(nav_msgs::msg::OccupancyGrid& grid,
       if (cell_x >= 0 && cell_x < static_cast<int>(grid.info.width) && 
           cell_y >= 0 && cell_y < static_cast<int>(grid.info.height)){
 
-        double dist = std::sqrt((dx * grid.info.resolution)**2 + (dy * grid.info.resolution)**2);
+        double dist = std::sqrt(std::pow(dx * grid.info.resolution, 2) + std::pow(dy * grid.info.resolution, 2));
         if (dist <= radius) {
 
           int index = cell_y * grid.info.width + cell_x; // index is computed with y # of lines + x

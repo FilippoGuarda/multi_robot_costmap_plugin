@@ -367,14 +367,15 @@ void GlobalCostmapFusion::publishSharedObstacles()
   }
 
   // Add obstacles on robot footprints
-  std::lock_guard<std::mutex> robot_lock(robot_info_mutex_);
-  for (const auto& [robot_id, info] : robot_info_) {
-    if (info.active) {
-      double robot_x = info.transform.transform.translation.x;
-      double robot_y = info.transform.transform.translation.y;
-      markRobotFootprint(*grid_msg, robot_x, robot_y);
-    }
-  }
+  // Temporary on hold, needs optimization
+  // std::lock_guard<std::mutex> robot_lock(robot_info_mutex_);
+  // for (const auto& [robot_id, info] : robot_info_) {
+  //   if (info.active) {
+  //     double robot_x = info.transform.transform.translation.x;
+  //     double robot_y = info.transform.transform.translation.y;
+  //     markRobotFootprint(*grid_msg, robot_x, robot_y);
+  //   }
+  // }
 
   grid_pub_->publish(std::move(grid_msg));
   RCLCPP_DEBUG(this->get_logger(), "Published grid with %zu obstacles", shared_obstacles_.size());

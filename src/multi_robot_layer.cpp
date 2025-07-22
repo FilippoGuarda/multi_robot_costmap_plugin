@@ -204,7 +204,8 @@ void MultiRobotLayer::updateCosts(
   }
 
   // Remove robot's own footptrint from costmap
-  clearOwnFootprint(master_grid, robot_x, robot_y, min_i, min_j, max_i, max_j);
+  // Temporary on hold, needs optimization
+  //clearOwnFootprint(master_grid, robot_x, robot_y, min_i, min_j, max_i, max_j);
 }
 
 void MultiRobotLayer::reset()

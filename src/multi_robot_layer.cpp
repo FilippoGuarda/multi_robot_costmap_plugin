@@ -118,8 +118,6 @@ void MultiRobotLayer::updateBounds(
 {
   if (!enabled_) return;
 
-
-
   if (need_recalculation_) {
     last_min_x_ = *min_x;
     last_min_y_ = *min_y;
@@ -227,6 +225,8 @@ void MultiRobotLayer::sharedGridCallback(const nav_msgs::msg::OccupancyGrid::Sha
 
 bool MultiRobotLayer::shouldApplyObstacle(double obs_x, double obs_y, double robot_x, double robot_y)
 {
+  // Return true only if the obstacle is further than assigned from the robot distance
+  // Possible TODO: refactor using openCV to optimize computation on whole map one shot
   double dx = obs_x - robot_x;
   double dy = obs_y - robot_y;
   double distance = sqrt(dx*dx + dy*dy);

@@ -26,11 +26,52 @@
 #include <pluginlib/class_list_macros.hpp>
 
 #include <mutex>
+#include <atomic>
 #include <string>
 #include <memory>
+#include <unordered_set>
+#include <unordered_map>
 
 namespace multi_robot_costmap_plugin
 {
+
+// Sparse obstacle cell representation
+struct ObstacleCell {
+  int x, y;
+  unsigned char cost;
+  
+  bool operator==(const ObstacleCell& other) const {
+    return x == other.x && y == other.y;
+  }
+};
+
+// Hash function for ObstacleCell
+struct ObstacleCellHash {
+  std::size_t operator()(const ObstacleCell& cell) const {
+    return std::hash<int>()(cell.x) ^ (std::hash<int>()(cell.y) << 1);
+  }
+};
+
+// Region of Interest bounds
+struct ROI {
+  int min_i, min_j, max_i, max_j;
+  bool is_valid;
+  
+  ROI() : min_i(INT_MAX), min_j(INT_MAX), max_i(INT_MIN), max_j(INT_MIN), is_valid(false) {}
+  
+  void expand(int i, int j) {
+    if (!is_valid) {
+      min_i = max_i = i;
+      min_j = max_j = j;
+      is_valid = true;
+    } else {
+      min_i = std::min(min_i, i);
+      min_j = std::min(min_j, j);
+      max_i = std::max(max_i, i);
+      max_j = std::max(max_j, j);
+    }
+  }
+};
 
 class MultiRobotLayer : public nav2_costmap_2d::Layer
 {
@@ -48,7 +89,7 @@ public:
 
   virtual void reset() override;
   virtual void onFootprintChanged() override;
-  virtual bool isClearable() override;  // ← ADD THIS MISSING METHOD
+  virtual bool isClearable() override;
 
 private:
   // Configuration parameters
@@ -60,22 +101,47 @@ private:
   double exclusion_buffer_;
   double transform_timeout_;
 
-  // Update tracking (MOVED BEFORE last_* members to fix initialization order)
+  // Optimization parameters
+  double min_update_distance_;
+  double roi_padding_;
+  int max_obstacles_per_update_;
+
+  // Update tracking
   bool need_recalculation_;
   double last_min_x_, last_min_y_, last_max_x_, last_max_y_;
+  double last_robot_x_, last_robot_y_;
 
   // ROS interfaces  
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr grid_sub_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
-  // Shared grid data
-  nav_msgs::msg::OccupancyGrid::SharedPtr latest_shared_grid_;
-  std::mutex grid_mutex_;
+  // FIXED: Use mutex-protected shared_ptr instead of atomic (C++11 compatible)
+  nav_msgs::msg::OccupancyGrid::SharedPtr active_grid_;
+  std::mutex active_grid_mutex_;
+
+  // OPTIMIZATION 2: Sparse obstacle storage
+  std::unordered_set<ObstacleCell, ObstacleCellHash> current_obstacles_;
+  std::unordered_set<ObstacleCell, ObstacleCellHash> previous_obstacles_;
+  std::mutex obstacles_mutex_;
+
+  // OPTIMIZATION 3: Region-of-Interest tracking
+  ROI update_roi_;
+  std::atomic<bool> roi_dirty_;
+
+  // OPTIMIZATION 4: Throttled updates
+  rclcpp::Time last_grid_update_;
+  std::atomic<uint64_t> grid_sequence_;
+  uint64_t last_processed_sequence_;
 
   // Private methods
   void sharedGridCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
   bool getRobotPose(double& x, double& y);
+  void extractObstaclesFromGrid(const nav_msgs::msg::OccupancyGrid::SharedPtr grid);
+  void updateROIFromChanges();
+  bool shouldUpdateCosts(double robot_x, double robot_y);
+  inline void applyCostToCell(nav2_costmap_2d::Costmap2D & master_grid, int i, int j, unsigned char cost);
+  nav_msgs::msg::OccupancyGrid::SharedPtr getActiveGrid();
 };
 
 } // namespace multi_robot_costmap_plugin

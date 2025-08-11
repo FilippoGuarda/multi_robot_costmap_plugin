@@ -1,4 +1,4 @@
-// Copyright 2023 Filippo Guarda
+// Copyright 2025 Filippo Guarda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -73,20 +73,47 @@ GlobalCostmapFusion::GlobalCostmapFusion(const rclcpp::NodeOptions & options)
   grid_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
     "shared_obstacles", rclcpp::QoS(1).reliable());
 
-  // Create periodic timers
+  // Create periodic timers, in newer ROS2 distrib. gotta use create_timer instead of create_wall_timer
   transform_update_timer_ = this->create_wall_timer(
-    100ms, std::bind(&GlobalCostmapFusion::updateRobotTransforms, this));
+    std::chrono::milliseconds(100), 
+    [this]() {
+      try {
+        this->updateRobotTransforms();
+      } catch (const std::runtime_error& e) {
+        RCLCPP_DEBUG(this->get_logger(), "Transform update error: %s", e.what());
+      }
+    });
 
   publish_timer_ = this->create_wall_timer(
     std::chrono::milliseconds(static_cast<int>(1000.0 / update_frequency_)),
-    std::bind(&GlobalCostmapFusion::publishSharedObstacles, this));
+    [this]() {
+      try {
+        this->publishSharedObstacles();
+      } catch (const std::runtime_error& e) {
+        RCLCPP_DEBUG(this->get_logger(), "Publish error: %s", e.what());
+      }
+    });
 
   activity_check_timer_ = this->create_wall_timer(
-    1s, std::bind(&GlobalCostmapFusion::checkRobotActivity, this));
+    std::chrono::seconds(3),  // 3-second delay to avoid startup race
+    [this]() {
+      try {
+        this->checkRobotActivity();
+      } catch (const std::runtime_error& e) {
+        RCLCPP_DEBUG(this->get_logger(), "Activity check error: %s", e.what());
+      }
+    });
 
   if (enable_memory_cleanup_) {
     memory_cleanup_timer_ = this->create_wall_timer(
-      10s, std::bind(&GlobalCostmapFusion::cleanupOldObstacles, this));
+      std::chrono::seconds(15),  // 15-second delay for startup
+      [this]() {
+        try {
+          this->cleanupOldObstacles();
+        } catch (const std::runtime_error& e) {
+          RCLCPP_DEBUG(this->get_logger(), "Cleanup error: %s", e.what());
+        }
+      });
   }
 
   // Setup robot info and initialize from map
@@ -110,7 +137,7 @@ void GlobalCostmapFusion::setupRobotInfo()
     RobotInfo info;
     info.active = false;
     info.base_frame = robot_id + base_frame_suffix_;
-    info.last_update = this->now();
+    info.last_update = this->get_clock()->now(); 
     robot_info_[robot_id] = info;
 
     // Create laser scan subscriber for each robot
@@ -312,11 +339,12 @@ bool GlobalCostmapFusion::getRobotTransform(const std::string& robot_id,
       global_frame_, robot_id + base_frame_suffix_, tf2::TimePointZero);
     return true;
   } catch (const tf2::TransformException& ex) {
-    static std::map<std::string, rclcpp::Time> last_warning;
-    auto now = this->now();
-    if (last_warning[robot_id] + rclcpp::Duration::from_seconds(5) < now) {
-      RCLCPP_DEBUG(this->get_logger(), "Transform not available for %s: %s", robot_id.c_str(), ex.what());
-      last_warning[robot_id] = now;
+    static std::map<std::string, int> error_count;
+    error_count[robot_id]++;
+    
+    if (error_count[robot_id] % 10 == 1) {
+      RCLCPP_WARN(this->get_logger(), "Transform failed for %s (attempt %d): %s", 
+                  robot_id.c_str(), error_count[robot_id], ex.what());
     }
     return false;
   }
@@ -347,13 +375,12 @@ void GlobalCostmapFusion::updateObstacleMemory(const std::vector<geometry_msgs::
   
   std::lock_guard<std::mutex> lock(obstacle_memory_.memory_mutex);
   
-  double current_time = this->now().seconds();
+  double current_time = this->get_clock()->now().seconds();
   
   // Add new obstacles to persistent memory
   for (const auto& obstacle : obstacles) {
     cv::Point2i grid_point = worldToGrid(obstacle);
     
-    // Check bounds
     if (grid_point.x >= 0 && grid_point.x < obstacle_memory_.obstacle_grid.cols &&
         grid_point.y >= 0 && grid_point.y < obstacle_memory_.obstacle_grid.rows) {
       
@@ -466,7 +493,7 @@ void GlobalCostmapFusion::updateRobotTransforms()
     geometry_msgs::msg::TransformStamped tf;
     if (getRobotTransform(robot_id, tf)) {
       info.transform = tf;
-      info.last_update = this->now();
+      info.last_update = this->get_clock()->now();
       info.active = true;
     }
   }
@@ -476,12 +503,26 @@ void GlobalCostmapFusion::checkRobotActivity()
 {
   std::lock_guard<std::mutex> lock(robot_info_mutex_);
   
-  rclcpp::Time now = this->now();
-  for (auto& [robot_id, info] : robot_info_) {
-    if (info.active && (now - info.last_update).seconds() > robot_timeout_) {
-      info.active = false;
-      RCLCPP_WARN(this->get_logger(), "Robot %s marked as inactive due to timeout", robot_id.c_str());
+  if (robot_info_.empty()) {
+    return;
+  }
+  
+  try {
+    int64_t current_ns = this->get_clock()->now().nanoseconds();
+    int64_t timeout_ns = static_cast<int64_t>(robot_timeout_ * 1e9); // Convert seconds to nanoseconds
+    
+    for (auto& [robot_id, info] : robot_info_) {
+      if (info.active) {
+        int64_t time_diff_ns = current_ns - info.last_update.nanoseconds();
+        
+        if (time_diff_ns > timeout_ns) {
+          info.active = false;
+          RCLCPP_WARN(this->get_logger(), "Robot %s marked as inactive due to timeout", robot_id.c_str());
+        }
+      }
     }
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(this->get_logger(), "Activity check failed: %s", e.what());
   }
 }
 
@@ -491,7 +532,7 @@ void GlobalCostmapFusion::cleanupOldObstacles()
   
   std::lock_guard<std::mutex> lock(obstacle_memory_.memory_mutex);
   
-  double current_time = this->now().seconds();
+  double current_time = this->get_clock()->now().seconds();
   int cleaned_count = 0;
   
   // Iterate through all cells and apply aging
@@ -540,7 +581,7 @@ void GlobalCostmapFusion::publishSharedObstacles()
   
   // Create occupancy grid message
   nav_msgs::msg::OccupancyGrid grid;
-  grid.header.stamp = this->now();
+  grid.header.stamp = this->get_clock()->now();
   grid.header.frame_id = global_frame_;
   
   grid.info.resolution = grid_resolution_;

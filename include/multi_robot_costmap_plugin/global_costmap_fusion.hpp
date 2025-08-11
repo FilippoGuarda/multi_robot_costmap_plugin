@@ -66,7 +66,7 @@ private:
   void initializeFromMap();
   void mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
   void requestMapFromService();
-  void markRobotFootprint(nav_msgs::msg::OccupancyGrid& grid, double robot_x, double robot_y);
+  // void markRobotFootprint(nav_msgs::msg::OccupancyGrid& grid, double robot_x, double robot_y);
 
   // Parameters
   std::vector<std::string> robot_ids_;

@@ -54,9 +54,9 @@ private:
   
   void sharedGridCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
   bool shouldApplyObstacle(double obs_x, double obs_y, double robot_x, double robot_y);
-  void clearOwnFootprint(nav2_costmap_2d::Costmap2D& master_grid, 
-                      double robot_x, double robot_y, 
-                      int min_i, int min_j, int max_i, int max_j);
+  // void clearOwnFootprint(nav2_costmap_2d::Costmap2D& master_grid, 
+  //                     double robot_x, double robot_y, 
+  //                     int min_i, int min_j, int max_i, int max_j);
 
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr grid_sub_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;

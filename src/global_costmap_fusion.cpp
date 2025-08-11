@@ -234,6 +234,8 @@ void GlobalCostmapFusion::updateRobotTransforms()
   }
 }
 
+
+// TODO: separate the scan processing in a different callback
 void GlobalCostmapFusion::processLaserScan(
   const sensor_msgs::msg::LaserScan::SharedPtr msg,
   const std::string& robot_id)
@@ -398,34 +400,34 @@ void GlobalCostmapFusion::checkRobotActivity()
   }
 }
 
-void GlobalCostmapFusion::markRobotFootprint(nav_msgs::msg::OccupancyGrid& grid, double robot_x, double robot_y){
-  // Get robots positions
-  int grid_x = static_cast<int>((robot_x - grid.info.origin.position.x)/grid.info.resolution);
-  int grid_y = static_cast<int>((robot_y - grid.info.origin.position.y)/grid.info.resolution);
+// void GlobalCostmapFusion::markRobotFootprint(nav_msgs::msg::OccupancyGrid& grid, double robot_x, double robot_y){
+//   // Get robots positions
+//   int grid_x = static_cast<int>((robot_x - grid.info.origin.position.x)/grid.info.resolution);
+//   int grid_y = static_cast<int>((robot_y - grid.info.origin.position.y)/grid.info.resolution);
 
-  double radius = robot_radius_ + exclusion_buffer_;
-  int radius_cells = static_cast<int>(std::ceil(radius/grid.info.resolution));
+//   double radius = robot_radius_ + exclusion_buffer_;
+//   int radius_cells = static_cast<int>(std::ceil(radius/grid.info.resolution));
 
-  // Mark cells corresponding to robot footprint as occupied
-  for (int dy = -radius_cells; dy <= radius_cells; ++dy) {
+//   // Mark cells corresponding to robot footprint as occupied
+//   for (int dy = -radius_cells; dy <= radius_cells; ++dy) {
 
-    for (int dx = -radius_cells; dx <= radius_cells; ++dx) {
+//     for (int dx = -radius_cells; dx <= radius_cells; ++dx) {
 
-      int cell_x = grid_x + dx;
-      int cell_y = grid_y + dy;
-      if (cell_x >= 0 && cell_x < static_cast<int>(grid.info.width) && 
-          cell_y >= 0 && cell_y < static_cast<int>(grid.info.height)){
+//       int cell_x = grid_x + dx;
+//       int cell_y = grid_y + dy;
+//       if (cell_x >= 0 && cell_x < static_cast<int>(grid.info.width) && 
+//           cell_y >= 0 && cell_y < static_cast<int>(grid.info.height)){
 
-        double dist = std::sqrt(std::pow(dx * grid.info.resolution, 2) + std::pow(dy * grid.info.resolution, 2));
-        if (dist <= radius) {
+//         double dist = std::sqrt(std::pow(dx * grid.info.resolution, 2) + std::pow(dy * grid.info.resolution, 2));
+//         if (dist <= radius) {
 
-          int index = cell_y * grid.info.width + cell_x; // index is computed with y # of lines + x
-          grid.data[index] = 100; 
-        }
-      }
-    }
-  }
-}
+//           int index = cell_y * grid.info.width + cell_x; // index is computed with y # of lines + x
+//           grid.data[index] = 100; 
+//         }
+//       }
+//     }
+//   }
+// }
 
 
 } // namespace multi_robot_costmap_plugin

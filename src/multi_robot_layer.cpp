@@ -237,32 +237,32 @@ bool MultiRobotLayer::shouldApplyObstacle(double obs_x, double obs_y, double rob
   return distance > (robot_radius_ + exclusion_buffer_);
 }
 
-void MultiRobotLayer::clearOwnFootprint(nav2_costmap_2d::Costmap2D& master_grid, 
-                                       double robot_x, double robot_y, 
-                                       int min_i, int min_j, int max_i, int max_j) {
-  unsigned int mx, my;
-  if (!master_grid.worldToMap(robot_x, robot_y, mx, my)) return;
+// void MultiRobotLayer::clearOwnFootprint(nav2_costmap_2d::Costmap2D& master_grid, 
+//                                        double robot_x, double robot_y, 
+//                                        int min_i, int min_j, int max_i, int max_j) {
+//   unsigned int mx, my;
+//   if (!master_grid.worldToMap(robot_x, robot_y, mx, my)) return;
 
-  double radius = robot_radius_ + exclusion_buffer_;
-  int radius_cells = static_cast<int>(std::ceil(radius / master_grid.getResolution()));
+//   double radius = robot_radius_ + exclusion_buffer_;
+//   int radius_cells = static_cast<int>(std::ceil(radius / master_grid.getResolution()));
 
-  for (int dy = -radius_cells; dy <= radius_cells; ++dy) {
-    for (int dx = -radius_cells; dx <= radius_cells; ++dx) {
-      int cell_x = static_cast<int>(mx) + dx;
-      int cell_y = static_cast<int>(my) + dy;
+//   for (int dy = -radius_cells; dy <= radius_cells; ++dy) {
+//     for (int dx = -radius_cells; dx <= radius_cells; ++dx) {
+//       int cell_x = static_cast<int>(mx) + dx;
+//       int cell_y = static_cast<int>(my) + dy;
 
-      if (cell_x >= min_i && cell_x < max_i && 
-          cell_y >= min_j && cell_y < max_j &&
-          cell_x >= 0 && cell_x < static_cast<int>(master_grid.getSizeInCellsX()) &&
-          cell_y >= 0 && cell_y < static_cast<int>(master_grid.getSizeInCellsY())) {
+//       if (cell_x >= min_i && cell_x < max_i && 
+//           cell_y >= min_j && cell_y < max_j &&
+//           cell_x >= 0 && cell_x < static_cast<int>(master_grid.getSizeInCellsX()) &&
+//           cell_y >= 0 && cell_y < static_cast<int>(master_grid.getSizeInCellsY())) {
         
-        double dist = std::hypot(dx * master_grid.getResolution(), dy * master_grid.getResolution());
-        if (dist <= radius) {
-          master_grid.setCost(cell_x, cell_y, 0);  // Set to free space (remove occupancy)
-        }
-      }
-    }
-  }
-}
+//         double dist = std::hypot(dx * master_grid.getResolution(), dy * master_grid.getResolution());
+//         if (dist <= radius) {
+//           master_grid.setCost(cell_x, cell_y, 0);  // Set to free space (remove occupancy)
+//         }
+//       }
+//     }
+//   }
+// }
 
 } // namespace multi_robot_costmap_plugin

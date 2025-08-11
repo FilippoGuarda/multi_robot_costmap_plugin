@@ -21,6 +21,12 @@ global_costmap_fusion:
     grid_width: 100.0          # meters - total width of occupancy grid
     grid_height: 100.0         # meters - total height of occupancy grid
 
+    # Map memory parameters
+    obstacle_decay_time: 30.0      # Start decay after 30 seconds
+    max_obstacle_age: 300.0        # Remove after 5 minutes
+    min_detection_count: 2         # Need 2+ hits to mark as obstacle
+    enable_memory_cleanup: true    # Enable periodic cleanup
+
 
 #======================================================================
 # Example configuration for one robot

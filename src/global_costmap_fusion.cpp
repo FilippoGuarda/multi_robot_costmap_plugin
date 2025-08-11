@@ -1,4 +1,4 @@
-// Copyright 2025 Filippo Guarda
+// Copyright 2023 Filippo Guarda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,30 +13,40 @@
 // limitations under the License.
 
 #include "multi_robot_costmap_plugin/global_costmap_fusion.hpp"
+#include <chrono>
+#include <functional>
+#include <memory>
 #include <cmath>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <algorithm>
+
+using namespace std::chrono_literals;
 
 namespace multi_robot_costmap_plugin
 {
 
 GlobalCostmapFusion::GlobalCostmapFusion(const rclcpp::NodeOptions & options)
-: Node("global_costmap_fusion", options), map_initialized_(false)
+: Node("global_costmap_fusion", options)
 {
-  // Declare parameters
-  this->declare_parameter("robots", std::vector<std::string>{"robot1"});
-  this->declare_parameter("robot_radius", 0.3);
-  this->declare_parameter("exclusion_buffer", 0.5);
+  // Declare and get basic parameters
+  this->declare_parameter("robot_ids", std::vector<std::string>{"robot1", "robot2"});
+  this->declare_parameter("robot_radius", 0.35);
+  this->declare_parameter("exclusion_buffer", 0.1);
   this->declare_parameter("update_frequency", 10.0);
   this->declare_parameter("robot_timeout", 5.0);
   this->declare_parameter("global_frame", "map");
-  this->declare_parameter("output_topic", "/shared_obstacles_grid");
   this->declare_parameter("scan_topic", "scan");
-  this->declare_parameter("map_topic", "/map");
-  this->declare_parameter("map_service", "/map_server/map");
-  this->declare_parameter("base_frame_suffix", "base_footprint");
+  this->declare_parameter("map_topic", "map");
+  this->declare_parameter("map_service", "map_server/map");
+  this->declare_parameter("base_frame_suffix", "_base_link");
+  
+  // Memory management parameters for persistent obstacles
+  this->declare_parameter("obstacle_decay_time", 30.0);
+  this->declare_parameter("max_obstacle_age", 300.0);
+  this->declare_parameter("min_detection_count", 2);
+  this->declare_parameter("enable_memory_cleanup", true);
 
-  // Get parameters
-  robot_ids_ = this->get_parameter("robots").as_string_array();
+  // Retrieve parameters
+  robot_ids_ = this->get_parameter("robot_ids").as_string_array();
   robot_radius_ = this->get_parameter("robot_radius").as_double();
   exclusion_buffer_ = this->get_parameter("exclusion_buffer").as_double();
   update_frequency_ = this->get_parameter("update_frequency").as_double();
@@ -46,257 +56,225 @@ GlobalCostmapFusion::GlobalCostmapFusion(const rclcpp::NodeOptions & options)
   map_topic_ = this->get_parameter("map_topic").as_string();
   map_service_ = this->get_parameter("map_service").as_string();
   base_frame_suffix_ = this->get_parameter("base_frame_suffix").as_string();
+  
+  obstacle_decay_time_ = this->get_parameter("obstacle_decay_time").as_double();
+  max_obstacle_age_ = this->get_parameter("max_obstacle_age").as_double();
+  min_detection_count_ = this->get_parameter("min_detection_count").as_int();
+  enable_memory_cleanup_ = this->get_parameter("enable_memory_cleanup").as_bool();
 
-  // Verify robot ids are not empty
-  if (robot_ids_.empty()) {
-    RCLCPP_ERROR(this->get_logger(), "No robots specified in 'robots' parameter");
-    throw std::runtime_error("No robots specified");
-  }
-
-  std::string output_topic = this->get_parameter("output_topic").as_string();
-
-  // Setup TF with longer buffer for multi-robot scenarios
-  tf_buffer_ = std::make_shared<tf2_ros::Buffer>(
-    this->get_clock(), 
-    tf2::Duration(std::chrono::seconds(10))
-  );
+  // Initialize TF system
+  tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
-  // Create publisher
+  // Initialize state
+  map_initialized_ = false;
+
+  // Create publisher for shared obstacle grid
   grid_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
-    output_topic, rclcpp::QoS(10).reliable());
+    "shared_obstacles", rclcpp::QoS(1).reliable());
 
-  // Subscribe to map topic to get map parameters
-  map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
-    map_topic_, rclcpp::QoS(10).transient_local().reliable(),
-    std::bind(&GlobalCostmapFusion::mapCallback, this, std::placeholders::_1));
+  // Create periodic timers
+  transform_update_timer_ = this->create_wall_timer(
+    100ms, std::bind(&GlobalCostmapFusion::updateRobotTransforms, this));
 
-  // Create map service client as fallback
-  map_client_ = this->create_client<nav_msgs::srv::GetMap>(map_service_);
-
-  // Initialize robot info and setup subscriptions
-  setupRobotInfo();
-
-  // Timer for checking robot activity
-  activity_check_timer_ = this->create_wall_timer(
-    std::chrono::seconds(1),
-    std::bind(&GlobalCostmapFusion::checkRobotActivity, this));
-
-  // Timer for publishing shared obstacles
   publish_timer_ = this->create_wall_timer(
     std::chrono::milliseconds(static_cast<int>(1000.0 / update_frequency_)),
     std::bind(&GlobalCostmapFusion::publishSharedObstacles, this));
 
-  // Timer for updating robot transforms
-  transform_update_timer_ = this->create_wall_timer(
-    std::chrono::milliseconds(100), // Update transforms at 10Hz
-    std::bind(&GlobalCostmapFusion::updateRobotTransforms, this));
+  activity_check_timer_ = this->create_wall_timer(
+    1s, std::bind(&GlobalCostmapFusion::checkRobotActivity, this));
 
-  // Try to initialize from map
+  if (enable_memory_cleanup_) {
+    memory_cleanup_timer_ = this->create_wall_timer(
+      10s, std::bind(&GlobalCostmapFusion::cleanupOldObstacles, this));
+  }
+
+  // Setup robot info and initialize from map
+  setupRobotInfo();
   initializeFromMap();
 
-  RCLCPP_INFO(this->get_logger(), "GlobalCostmapFusion initialized for %zu robots", robot_ids_.size());
+  RCLCPP_INFO(this->get_logger(), 
+              "Global Costmap Fusion initialized with persistent memory for %zu robots", 
+              robot_ids_.size());
 }
 
 GlobalCostmapFusion::~GlobalCostmapFusion()
 {
 }
 
-void GlobalCostmapFusion::mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
+void GlobalCostmapFusion::setupRobotInfo()
 {
-  if (!map_initialized_) {
-    // Extract map parameters
-    grid_resolution_ = msg->info.resolution;
-    grid_width_ = msg->info.width * grid_resolution_;
-    grid_height_ = msg->info.height * grid_resolution_;
-    grid_origin_ = msg->info.origin;
-    global_frame_ = msg->header.frame_id;
-    
-    map_initialized_ = true;
-    
-    RCLCPP_INFO(this->get_logger(), 
-                "Map parameters initialized: resolution=%.3f, width=%.2f, height=%.2f, origin=[%.2f, %.2f]",
-                grid_resolution_, grid_width_, grid_height_, 
-                grid_origin_.position.x, grid_origin_.position.y);
+  std::lock_guard<std::mutex> lock(robot_info_mutex_);
+  
+  for (const auto& robot_id : robot_ids_) {
+    RobotInfo info;
+    info.active = false;
+    info.base_frame = robot_id + base_frame_suffix_;
+    info.last_update = this->now();
+    robot_info_[robot_id] = info;
+
+    // Create laser scan subscriber for each robot
+    std::string full_scan_topic = "/" + robot_id + "/" + scan_topic_;
+    scan_subs_[robot_id] = this->create_subscription<sensor_msgs::msg::LaserScan>(
+      full_scan_topic, rclcpp::QoS(10), 
+      [this, robot_id](const sensor_msgs::msg::LaserScan::SharedPtr msg) {
+        this->processLaserScan(msg, robot_id);
+      });
+      
+    RCLCPP_INFO(this->get_logger(), "Subscribed to %s for robot %s", 
+                full_scan_topic.c_str(), robot_id.c_str());
   }
 }
 
 void GlobalCostmapFusion::initializeFromMap()
 {
-  // Wait a bit for map topic to be available
-  std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+  // Subscribe to map topic
+  map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
+    map_topic_, rclcpp::QoS(1).reliable().transient_local(),
+    std::bind(&GlobalCostmapFusion::mapCallback, this, std::placeholders::_1));
   
+  // Also try to get map from service as fallback
+  requestMapFromService();
+}
+
+void GlobalCostmapFusion::mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
+{
   if (!map_initialized_) {
-    RCLCPP_INFO(this->get_logger(), "Map not received via topic, trying service...");
-    requestMapFromService();
+    RCLCPP_INFO(this->get_logger(), "Received map, initializing persistent obstacle memory");
+    
+    // Store map parameters
+    grid_resolution_ = msg->info.resolution;
+    grid_width_ = msg->info.width * grid_resolution_;
+    grid_height_ = msg->info.height * grid_resolution_;
+    grid_origin_ = msg->info.origin;
+    
+    map_initialized_ = true;
+    
+    // Initialize the persistent obstacle memory
+    initializeObstacleMemory();
+    
+    RCLCPP_INFO(this->get_logger(), 
+                "Map initialized: %dx%d cells (%.2fm x %.2fm) at %.3fm resolution", 
+                msg->info.width, msg->info.height, grid_width_, grid_height_, grid_resolution_);
   }
 }
 
 void GlobalCostmapFusion::requestMapFromService()
 {
+  map_client_ = this->create_client<nav_msgs::srv::GetMap>(map_service_);
+  
   if (!map_client_->wait_for_service(std::chrono::seconds(5))) {
-    RCLCPP_WARN(this->get_logger(), "Map service not available");
-    map_initialized_ = false;
+    RCLCPP_WARN(this->get_logger(), "Map service %s not available, relying on topic", map_service_.c_str());
     return;
   }
 
   auto request = std::make_shared<nav_msgs::srv::GetMap::Request>();
-  
   auto future = map_client_->async_send_request(request);
   
-  if (rclcpp::spin_until_future_complete(this->get_node_base_interface(), future) ==
-      rclcpp::FutureReturnCode::SUCCESS) {
+  if (future.wait_for(std::chrono::seconds(5)) == std::future_status::ready) {
     auto response = future.get();
+    auto& map = response->map;
     
-    // Extract map parameters from service response
-    const auto& map = response->map;
     grid_resolution_ = map.info.resolution;
     grid_width_ = map.info.width * grid_resolution_;
     grid_height_ = map.info.height * grid_resolution_;
     grid_origin_ = map.info.origin;
-    global_frame_ = map.header.frame_id;
-    
+
     map_initialized_ = true;
+    initializeObstacleMemory();
     
-    RCLCPP_INFO(this->get_logger(), 
-                "Map parameters from service: resolution=%.3f, width=%.2f, height=%.2f",
-                grid_resolution_, grid_width_, grid_height_);
+    RCLCPP_INFO(this->get_logger(), "Retrieved map from service and initialized memory");
   } else {
-    RCLCPP_ERROR(this->get_logger(), "Failed to get map from service");
+    RCLCPP_WARN(this->get_logger(), "Failed to get map from service, waiting for topic");
   }
 }
 
-void GlobalCostmapFusion::setupRobotInfo()
+void GlobalCostmapFusion::initializeObstacleMemory()
 {
-  for (const auto& robot_id : robot_ids_) {
-    // Create scan subscription to lidars
-    std::string scan_topic = "/" + robot_id + "/" + scan_topic_;
-    auto scan_callback = [this, robot_id](const sensor_msgs::msg::LaserScan::SharedPtr msg) {
-      this->processLaserScan(msg, robot_id);
-    };
-
-    scan_subs_[robot_id] = this->create_subscription<sensor_msgs::msg::LaserScan>(
-      scan_topic, rclcpp::SensorDataQoS(), scan_callback);
-
-    // Initialize robot info with TF-based approach
-    RobotInfo info;
-    info.transform = geometry_msgs::msg::TransformStamped();
-    info.last_update = rclcpp::Time(0, 0, RCL_ROS_TIME);
-    info.active = false;
-    info.base_frame = robot_id + "/" + base_frame_suffix_;
-    robot_info_[robot_id] = info;
-
-    RCLCPP_INFO(this->get_logger(), "Setup subscriptions for robot: %s (base_frame: %s)", 
-                robot_id.c_str(), info.base_frame.c_str());
-  }
-}
-
-bool GlobalCostmapFusion::getRobotTransform(
-  const std::string& robot_id, 
-  geometry_msgs::msg::TransformStamped& transform)
-{
-  try {
-    // Look up transform from robot base frame to global frame
-    const auto& robot_info = robot_info_.at(robot_id);
-    
-    transform = tf_buffer_->lookupTransform(
-      global_frame_,                  // target frame
-      robot_info.base_frame,          // source frame  
-      rclcpp::Time(0),               // latest available time
-      rclcpp::Duration::from_seconds(0.1) // timeout
-    );
-    
-    return true;
-  } catch (const tf2::TransformException& ex) {
-    RCLCPP_DEBUG(this->get_logger(), 
-                "Could not get transform for robot %s: %s", 
-                robot_id.c_str(), ex.what());
-    return false;
-  }
-}
-
-void GlobalCostmapFusion::updateRobotTransforms()
-{
-  std::lock_guard<std::mutex> lock(robot_info_mutex_);
-  
-  for (auto& [robot_id, info] : robot_info_) {
-    geometry_msgs::msg::TransformStamped transform;
-    
-    if (getRobotTransform(robot_id, transform)) {
-      info.transform = transform;
-      info.last_update = this->now();
-      info.active = true;
-      RCLCPP_DEBUG(this->get_logger(), "Updated transform for robot %s", robot_id.c_str());
-    } else {
-      // Don't immediately mark as inactive - let timeout handle it
-      RCLCPP_DEBUG(this->get_logger(), "Failed to get transform for robot %s", robot_id.c_str());
-    }
-  }
-}
-
-
-// TODO: separate the scan processing in a different callback
-void GlobalCostmapFusion::processLaserScan(
-  const sensor_msgs::msg::LaserScan::SharedPtr msg,
-  const std::string& robot_id)
-{
-  std::lock_guard<std::mutex> robot_lock(robot_info_mutex_);
-  
-  // Check if we have transform information for this robot
-  if (robot_info_.find(robot_id) == robot_info_.end() || !robot_info_[robot_id].active) {
-    RCLCPP_DEBUG(this->get_logger(), "Robot %s not active or not found", robot_id.c_str());
+  if (!map_initialized_) {
+    RCLCPP_WARN(this->get_logger(), "Cannot initialize obstacle memory: map not ready");
     return;
   }
 
-  const auto& robot_transform = robot_info_[robot_id].transform;
-  std::vector<geometry_msgs::msg::Point> new_obstacles;
-
-  // Process each laser scan point
-  for (size_t i = 0; i < msg->ranges.size(); ++i) {
-    if (msg->ranges[i] < msg->range_min || msg->ranges[i] > msg->range_max || 
-        std::isnan(msg->ranges[i]) || std::isinf(msg->ranges[i])) {
-      continue;
-    }
-
-    // Convert scan point to world coordinates using TF
-    geometry_msgs::msg::Point world_point = convertScanPointToWorld(msg, i, robot_transform);
-
-    // Skip if this point corresponds to another robot's location
-    if (isRobotLocation(world_point)) {
-      continue;
-    }
-
-    new_obstacles.push_back(world_point);
+  if (obstacle_memory_.initialized) {
+    RCLCPP_INFO(this->get_logger(), "Obstacle memory already initialized");
+    return;
   }
 
-  if (!new_obstacles.empty()) {
-    RCLCPP_DEBUG(this->get_logger(), "Robot %s detected %zu new obstacles", 
-                robot_id.c_str(), new_obstacles.size());
-  }
+  std::lock_guard<std::mutex> lock(obstacle_memory_.memory_mutex);
 
-  // Update shared obstacles
-  {
-    std::lock_guard<std::mutex> obs_lock(obstacles_mutex_);
-    shared_obstacles_.insert(shared_obstacles_.end(), new_obstacles.begin(), new_obstacles.end());
+  try {
+    // Calculate grid dimensions from map parameters
+    int grid_width_cells = static_cast<int>(grid_width_ / grid_resolution_);
+    int grid_height_cells = static_cast<int>(grid_height_ / grid_resolution_);
+
+    // Initialize OpenCV matrices for persistent memory
+    obstacle_memory_.obstacle_grid = cv::Mat::zeros(grid_height_cells, grid_width_cells, CV_8UC1);
+    obstacle_memory_.timestamp_grid = cv::Mat::zeros(grid_height_cells, grid_width_cells, CV_64FC1);
+    obstacle_memory_.confidence_grid = cv::Mat::zeros(grid_height_cells, grid_width_cells, CV_32FC1);
+
+    obstacle_memory_.initialized = true;
+
+    RCLCPP_INFO(this->get_logger(), 
+                "Persistent obstacle memory initialized: %dx%d cells (%.2f x %.2f m) at %.3fm resolution",
+                grid_width_cells, grid_height_cells, 
+                grid_width_, grid_height_, grid_resolution_);
+
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(this->get_logger(), "Failed to initialize obstacle memory: %s", e.what());
+    obstacle_memory_.initialized = false;
   }
 }
 
-bool GlobalCostmapFusion::isRobotLocation(const geometry_msgs::msg::Point& point)
+void GlobalCostmapFusion::processLaserScan(const sensor_msgs::msg::LaserScan::SharedPtr scan,
+                                           const std::string& robot_id)
 {
-  for (const auto& [robot_id, info] : robot_info_) {
-    if (!info.active) continue;
-
-    // Extract robot position from transform
-    const auto& robot_pos = info.transform.transform.translation;
-    double dx = point.x - robot_pos.x;
-    double dy = point.y - robot_pos.y;
-    double distance = sqrt(dx*dx + dy*dy);
-
-    if (distance < (robot_radius_ + exclusion_buffer_)) {
-      return true;
-    }
+  if (!map_initialized_ || !obstacle_memory_.initialized) {
+    return;
   }
-  return false;
+
+  geometry_msgs::msg::TransformStamped robot_transform;
+  if (!getRobotTransform(robot_id, robot_transform)) {
+    return;
+  }
+
+  // Extract robot position
+  geometry_msgs::msg::Point robot_pos;
+  robot_pos.x = robot_transform.transform.translation.x;
+  robot_pos.y = robot_transform.transform.translation.y;
+  robot_pos.z = 0.0;
+
+  std::vector<geometry_msgs::msg::Point> obstacles;
+  std::vector<geometry_msgs::msg::Point> ray_endpoints;
+
+  // Process each scan point
+  for (size_t i = 0; i < scan->ranges.size(); ++i) {
+    double range = scan->ranges[i];
+    
+    // Skip invalid readings
+    if (std::isnan(range) || std::isinf(range)) {
+      continue;
+    }
+
+    // Convert scan point to world coordinates
+    geometry_msgs::msg::Point world_point = convertScanPointToWorld(scan, i, robot_transform);
+    
+    // If it's a valid obstacle detection
+    if (range >= scan->range_min && range <= scan->range_max && range < scan->range_max * 0.99) {
+      if (!isRobotLocation(world_point)) {
+        obstacles.push_back(world_point);
+      }
+    }
+    
+    // All endpoints are used for ray tracing (whether obstacle or free space)
+    ray_endpoints.push_back(world_point);
+  }
+
+  // Update persistent memory with new detections
+  updateObstacleMemory(obstacles, robot_pos);
+  
+  // Clear obstacles along rays where we now see free space
+  rayTraceClearance(robot_pos, ray_endpoints);
 }
 
 geometry_msgs::msg::Point GlobalCostmapFusion::convertScanPointToWorld(
@@ -304,130 +282,323 @@ geometry_msgs::msg::Point GlobalCostmapFusion::convertScanPointToWorld(
   size_t point_index,
   const geometry_msgs::msg::TransformStamped& robot_transform)
 {
-  // Create a point in the laser scanner frame
-  geometry_msgs::msg::PointStamped scan_point;
-  scan_point.header.frame_id = scan->header.frame_id;
-  scan_point.header.stamp = scan->header.stamp;
-  
   double angle = scan->angle_min + point_index * scan->angle_increment;
   double range = scan->ranges[point_index];
-  
-  scan_point.point.x = range * cos(angle);
-  scan_point.point.y = range * sin(angle);
-  scan_point.point.z = 0.0;
 
+  // Clamp range to maximum if needed
+  if (range > scan->range_max) {
+    range = scan->range_max;
+  }
+
+  // Convert to scan frame coordinates
+  geometry_msgs::msg::PointStamped local_point;
+  local_point.header.frame_id = scan->header.frame_id;
+  local_point.point.x = range * cos(angle);
+  local_point.point.y = range * sin(angle);
+  local_point.point.z = 0.0;
+
+  // Transform to world frame
+  geometry_msgs::msg::PointStamped world_point;
+  tf2::doTransform(local_point, world_point, robot_transform);
+
+  return world_point.point;
+}
+
+bool GlobalCostmapFusion::getRobotTransform(const std::string& robot_id, 
+                                            geometry_msgs::msg::TransformStamped& transform)
+{
   try {
-    // Transform point from laser frame to global frame using TF2
-    geometry_msgs::msg::PointStamped world_point_stamped;
-    tf2::doTransform(scan_point, world_point_stamped, robot_transform);
-    
-    return world_point_stamped.point;
+    transform = tf_buffer_->lookupTransform(
+      global_frame_, robot_id + base_frame_suffix_, tf2::TimePointZero);
+    return true;
   } catch (const tf2::TransformException& ex) {
-    RCLCPP_WARN(this->get_logger(), "Transform failed: %s", ex.what());
-    // Return original point as fallback
-    return scan_point.point;
+    static std::map<std::string, rclcpp::Time> last_warning;
+    auto now = this->now();
+    if (last_warning[robot_id] + rclcpp::Duration::from_seconds(5) < now) {
+      RCLCPP_DEBUG(this->get_logger(), "Transform not available for %s: %s", robot_id.c_str(), ex.what());
+      last_warning[robot_id] = now;
+    }
+    return false;
   }
 }
 
-void GlobalCostmapFusion::publishSharedObstacles()
+bool GlobalCostmapFusion::isRobotLocation(const geometry_msgs::msg::Point& point)
 {
-  // Don't publish until map is initialized
-  if (!map_initialized_) {
-    return;
-  }
-
-  std::lock_guard<std::mutex> lock(obstacles_mutex_);
+  std::lock_guard<std::mutex> lock(robot_info_mutex_);
   
-  if (shared_obstacles_.empty()) {
-    return;
-  }
-
-  // Create occupancy grid using map-derived parameters
-  auto grid_msg = std::make_unique<nav_msgs::msg::OccupancyGrid>();
-  grid_msg->header.stamp = this->now();
-  grid_msg->header.frame_id = global_frame_;
-
-  // Use map-derived parameters
-  grid_msg->info.resolution = grid_resolution_;
-  grid_msg->info.width = static_cast<uint32_t>(grid_width_ / grid_resolution_);
-  grid_msg->info.height = static_cast<uint32_t>(grid_height_ / grid_resolution_);
-  grid_msg->info.origin = grid_origin_;
-
-  // Initialize grid data
-  grid_msg->data.resize(grid_msg->info.width * grid_msg->info.height, 0);
-
-  // Fill in obstacles using map origin
-  for (const auto& obstacle : shared_obstacles_) {
-    int grid_x = static_cast<int>((obstacle.x - grid_origin_.position.x) / grid_resolution_);
-    int grid_y = static_cast<int>((obstacle.y - grid_origin_.position.y) / grid_resolution_);
-
-    if (grid_x >= 0 && grid_x < static_cast<int>(grid_msg->info.width) &&
-        grid_y >= 0 && grid_y < static_cast<int>(grid_msg->info.height)) {
-      int index = grid_y * grid_msg->info.width + grid_x;
-      grid_msg->data[index] = 100; // Occupied
+  for (const auto& [robot_id, info] : robot_info_) {
+    if (!info.active) continue;
+    
+    double dx = point.x - info.transform.transform.translation.x;
+    double dy = point.y - info.transform.transform.translation.y;
+    double distance = sqrt(dx*dx + dy*dy);
+    
+    if (distance < robot_radius_ + exclusion_buffer_) {
+      return true;
     }
   }
+  return false;
+}
 
-  // Add obstacles on robot footprints
-  // Temporary on hold, needs optimization
-  // std::lock_guard<std::mutex> robot_lock(robot_info_mutex_);
-  // for (const auto& [robot_id, info] : robot_info_) {
-  //   if (info.active) {
-  //     double robot_x = info.transform.transform.translation.x;
-  //     double robot_y = info.transform.transform.translation.y;
-  //     markRobotFootprint(*grid_msg, robot_x, robot_y);
-  //   }
-  // }
+void GlobalCostmapFusion::updateObstacleMemory(const std::vector<geometry_msgs::msg::Point>& obstacles, 
+                                               const geometry_msgs::msg::Point& robot_pos)
+{
+  if (!obstacle_memory_.initialized) return;
+  
+  std::lock_guard<std::mutex> lock(obstacle_memory_.memory_mutex);
+  
+  double current_time = this->now().seconds();
+  
+  // Add new obstacles to persistent memory
+  for (const auto& obstacle : obstacles) {
+    cv::Point2i grid_point = worldToGrid(obstacle);
+    
+    // Check bounds
+    if (grid_point.x >= 0 && grid_point.x < obstacle_memory_.obstacle_grid.cols &&
+        grid_point.y >= 0 && grid_point.y < obstacle_memory_.obstacle_grid.rows) {
+      
+      // Increment confidence for this detection
+      float& confidence = obstacle_memory_.confidence_grid.at<float>(grid_point.y, grid_point.x);
+      confidence += 1.0f;
+      
+      // Update last seen timestamp
+      obstacle_memory_.timestamp_grid.at<double>(grid_point.y, grid_point.x) = current_time;
+      
+      // Mark as occupied if confidence threshold is met
+      if (confidence >= min_detection_count_) {
+        obstacle_memory_.obstacle_grid.at<uint8_t>(grid_point.y, grid_point.x) = 100;
+      }
+    }
+  }
+}
 
-  grid_pub_->publish(std::move(grid_msg));
-  RCLCPP_DEBUG(this->get_logger(), "Published grid with %zu obstacles", shared_obstacles_.size());
+void GlobalCostmapFusion::rayTraceClearance(const geometry_msgs::msg::Point& robot_pos, 
+                                            const std::vector<geometry_msgs::msg::Point>& endpoints)
+{
+  if (!obstacle_memory_.initialized) return;
+  
+  std::lock_guard<std::mutex> lock(obstacle_memory_.memory_mutex);
+  
+  cv::Point2i robot_grid = worldToGrid(robot_pos);
+  
+  // For each laser ray endpoint
+  for (const auto& endpoint : endpoints) {
+    cv::Point2i end_grid = worldToGrid(endpoint);
+    
+    // Get all points along the ray using Bresenham's algorithm
+    std::vector<cv::Point2i> ray_points;
+    rayTraceLine(robot_grid, end_grid, ray_points);
+    
+    // Clear obstacles along the ray (excluding the endpoint)
+    for (size_t i = 0; i < ray_points.size() - 1; ++i) {
+      const auto& point = ray_points[i];
+      
+      // Check bounds
+      if (point.x >= 0 && point.x < obstacle_memory_.obstacle_grid.cols &&
+          point.y >= 0 && point.y < obstacle_memory_.obstacle_grid.rows) {
+        
+        // Only clear cells that were previously marked as obstacles
+        if (obstacle_memory_.obstacle_grid.at<uint8_t>(point.y, point.x) > 0) {
+          obstacle_memory_.obstacle_grid.at<uint8_t>(point.y, point.x) = 0;
+          obstacle_memory_.confidence_grid.at<float>(point.y, point.x) = 0.0f;
+          // Don't reset timestamp - keep for decay tracking
+        }
+      }
+    }
+  }
+}
 
-  // Clear processed obstacles
-  shared_obstacles_.clear();
+void GlobalCostmapFusion::rayTraceLine(const cv::Point2i& start, const cv::Point2i& end, 
+                                       std::vector<cv::Point2i>& line_points) const
+{
+  line_points.clear();
+  
+  // Bresenham's line algorithm for efficient ray tracing
+  int x0 = start.x, y0 = start.y;
+  int x1 = end.x, y1 = end.y;
+  
+  int dx = abs(x1 - x0);
+  int dy = abs(y1 - y0);
+  int sx = (x0 < x1) ? 1 : -1;
+  int sy = (y0 < y1) ? 1 : -1;
+  int err = dx - dy;
+  
+  int x = x0, y = y0;
+  
+  while (true) {
+    line_points.emplace_back(x, y);
+    
+    if (x == x1 && y == y1) break;
+    
+    int e2 = 2 * err;
+    if (e2 > -dy) {
+      err -= dy;
+      x += sx;
+    }
+    if (e2 < dx) {
+      err += dx;
+      y += sy;
+    }
+  }
+}
+
+cv::Point2i GlobalCostmapFusion::worldToGrid(const geometry_msgs::msg::Point& world_point) const
+{
+  int grid_x = static_cast<int>((world_point.x - grid_origin_.position.x) / grid_resolution_);
+  int grid_y = static_cast<int>((world_point.y - grid_origin_.position.y) / grid_resolution_);
+  return cv::Point2i(grid_x, grid_y);
+}
+
+geometry_msgs::msg::Point GlobalCostmapFusion::gridToWorld(const cv::Point2i& grid_point) const
+{
+  geometry_msgs::msg::Point world_point;
+  world_point.x = grid_origin_.position.x + grid_point.x * grid_resolution_;
+  world_point.y = grid_origin_.position.y + grid_point.y * grid_resolution_;
+  world_point.z = 0.0;
+  return world_point;
+}
+
+void GlobalCostmapFusion::updateRobotTransforms()
+{
+  std::lock_guard<std::mutex> lock(robot_info_mutex_);
+  
+  for (auto& [robot_id, info] : robot_info_) {
+    geometry_msgs::msg::TransformStamped tf;
+    if (getRobotTransform(robot_id, tf)) {
+      info.transform = tf;
+      info.last_update = this->now();
+      info.active = true;
+    }
+  }
 }
 
 void GlobalCostmapFusion::checkRobotActivity()
 {
   std::lock_guard<std::mutex> lock(robot_info_mutex_);
-  auto current_time = this->now();
-  auto timeout_duration = rclcpp::Duration::from_seconds(robot_timeout_);
-
+  
+  rclcpp::Time now = this->now();
   for (auto& [robot_id, info] : robot_info_) {
-    if (info.active && (current_time - info.last_update) > timeout_duration) {
+    if (info.active && (now - info.last_update).seconds() > robot_timeout_) {
       info.active = false;
       RCLCPP_WARN(this->get_logger(), "Robot %s marked as inactive due to timeout", robot_id.c_str());
     }
   }
 }
 
-// void GlobalCostmapFusion::markRobotFootprint(nav_msgs::msg::OccupancyGrid& grid, double robot_x, double robot_y){
-//   // Get robots positions
-//   int grid_x = static_cast<int>((robot_x - grid.info.origin.position.x)/grid.info.resolution);
-//   int grid_y = static_cast<int>((robot_y - grid.info.origin.position.y)/grid.info.resolution);
+void GlobalCostmapFusion::cleanupOldObstacles()
+{
+  if (!obstacle_memory_.initialized) return;
+  
+  std::lock_guard<std::mutex> lock(obstacle_memory_.memory_mutex);
+  
+  double current_time = this->now().seconds();
+  int cleaned_count = 0;
+  
+  // Iterate through all cells and apply aging
+  for (int y = 0; y < obstacle_memory_.obstacle_grid.rows; ++y) {
+    for (int x = 0; x < obstacle_memory_.obstacle_grid.cols; ++x) {
+      if (obstacle_memory_.obstacle_grid.at<uint8_t>(y, x) > 0) {
+        double last_seen = obstacle_memory_.timestamp_grid.at<double>(y, x);
+        double age = current_time - last_seen;
+        
+        if (age > max_obstacle_age_) {
+          // Remove very old obstacles
+          obstacle_memory_.obstacle_grid.at<uint8_t>(y, x) = 0;
+          obstacle_memory_.confidence_grid.at<float>(y, x) = 0.0f;
+          obstacle_memory_.timestamp_grid.at<double>(y, x) = 0.0;
+          cleaned_count++;
+        } else if (age > obstacle_decay_time_) {
+          // Apply gradual decay
+          float decay_factor = 1.0f - (age - obstacle_decay_time_) / (max_obstacle_age_ - obstacle_decay_time_);
+          float current_confidence = obstacle_memory_.confidence_grid.at<float>(y, x);
+          float new_confidence = current_confidence * decay_factor;
+          
+          if (new_confidence < min_detection_count_) {
+            obstacle_memory_.obstacle_grid.at<uint8_t>(y, x) = 0;
+            obstacle_memory_.confidence_grid.at<float>(y, x) = 0.0f;
+            cleaned_count++;
+          } else {
+            obstacle_memory_.confidence_grid.at<float>(y, x) = new_confidence;
+          }
+        }
+      }
+    }
+  }
+  
+  if (cleaned_count > 0) {
+    RCLCPP_DEBUG(this->get_logger(), "Cleaned up %d old obstacles from memory", cleaned_count);
+  }
+}
 
-//   double radius = robot_radius_ + exclusion_buffer_;
-//   int radius_cells = static_cast<int>(std::ceil(radius/grid.info.resolution));
+void GlobalCostmapFusion::publishSharedObstacles()
+{
+  if (!map_initialized_ || !obstacle_memory_.initialized) {
+    return;
+  }
+  
+  std::lock_guard<std::mutex> lock(obstacle_memory_.memory_mutex);
+  
+  // Create occupancy grid message
+  nav_msgs::msg::OccupancyGrid grid;
+  grid.header.stamp = this->now();
+  grid.header.frame_id = global_frame_;
+  
+  grid.info.resolution = grid_resolution_;
+  grid.info.width = obstacle_memory_.obstacle_grid.cols;
+  grid.info.height = obstacle_memory_.obstacle_grid.rows;
+  grid.info.origin = grid_origin_;
+  
+  // Convert OpenCV matrix to occupancy grid data
+  grid.data.resize(grid.info.width * grid.info.height);
+  for (int y = 0; y < obstacle_memory_.obstacle_grid.rows; ++y) {
+    for (int x = 0; x < obstacle_memory_.obstacle_grid.cols; ++x) {
+      int index = y * grid.info.width + x;
+      grid.data[index] = obstacle_memory_.obstacle_grid.at<uint8_t>(y, x);
+    }
+  }
+  
+  // Mark robot footprints as free space
+  {
+    std::lock_guard<std::mutex> robot_lock(robot_info_mutex_);
+    for (const auto& [robot_id, info] : robot_info_) {
+      if (info.active) {
+        markRobotFootprint(grid, 
+                          info.transform.transform.translation.x,
+                          info.transform.transform.translation.y);
+      }
+    }
+  }
+  
+  grid_pub_->publish(grid);
+}
 
-//   // Mark cells corresponding to robot footprint as occupied
-//   for (int dy = -radius_cells; dy <= radius_cells; ++dy) {
-
-//     for (int dx = -radius_cells; dx <= radius_cells; ++dx) {
-
-//       int cell_x = grid_x + dx;
-//       int cell_y = grid_y + dy;
-//       if (cell_x >= 0 && cell_x < static_cast<int>(grid.info.width) && 
-//           cell_y >= 0 && cell_y < static_cast<int>(grid.info.height)){
-
-//         double dist = std::sqrt(std::pow(dx * grid.info.resolution, 2) + std::pow(dy * grid.info.resolution, 2));
-//         if (dist <= radius) {
-
-//           int index = cell_y * grid.info.width + cell_x; // index is computed with y # of lines + x
-//           grid.data[index] = 100; 
-//         }
-//       }
-//     }
-//   }
-// }
-
+void GlobalCostmapFusion::markRobotFootprint(nav_msgs::msg::OccupancyGrid& grid, 
+                                             double robot_x, double robot_y)
+{
+  geometry_msgs::msg::Point robot_point;
+  robot_point.x = robot_x;
+  robot_point.y = robot_y;
+  
+  cv::Point2i robot_grid = worldToGrid(robot_point);
+  int radius_cells = static_cast<int>((robot_radius_ + exclusion_buffer_) / grid_resolution_) + 1;
+  
+  // Clear circular area around robot
+  for (int dy = -radius_cells; dy <= radius_cells; ++dy) {
+    for (int dx = -radius_cells; dx <= radius_cells; ++dx) {
+      int grid_x = robot_grid.x + dx;
+      int grid_y = robot_grid.y + dy;
+      
+      if (grid_x >= 0 && grid_x < static_cast<int>(grid.info.width) &&
+          grid_y >= 0 && grid_y < static_cast<int>(grid.info.height)) {
+        
+        double distance = sqrt(dx*dx + dy*dy) * grid_resolution_;
+        if (distance <= robot_radius_ + exclusion_buffer_) {
+          int index = grid_y * grid.info.width + grid_x;
+          grid.data[index] = 0;  // Mark as free
+        }
+      }
+    }
+  }
+}
 
 } // namespace multi_robot_costmap_plugin

@@ -64,12 +64,11 @@ global_costmap_fusion:
             
 #           multi_robot_layer:
 #             plugin: "multi_robot_costmap_plugin::MultiRobotLayer"
-#             enabled: True
-#             update_topic: "/shared_costmap_updates"
-#             robot_namespace: "robot1"
+#             enabled: true
+#             shared_grid_topic: "/shared_obstacles"  # Match your fusion node's topic
 #             robot_radius: 0.35
-#             exclusion_buffer: 0.5
-#             max_update_age: 5.0
+#             exclusion_buffer: 0.1
+#             transform_timeout: 0.1
             
 #           inflation_layer:
 #             plugin: "nav2_costmap_2d/InflationLayer"

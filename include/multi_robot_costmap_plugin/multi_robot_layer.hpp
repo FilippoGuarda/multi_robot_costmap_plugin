@@ -19,14 +19,15 @@
 #include <nav2_costmap_2d/layer.hpp>
 #include <nav2_costmap_2d/layered_costmap.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
-#include <pluginlib/class_list_macros.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
-#include <geometry_msgs/msg/transform_stamped.hpp>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>  
-#include <tf2/utils.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <pluginlib/class_list_macros.hpp>
+
 #include <mutex>
 #include <string>
+#include <memory>
 
 namespace multi_robot_costmap_plugin
 {
@@ -44,27 +45,13 @@ public:
   virtual void updateCosts(
     nav2_costmap_2d::Costmap2D & master_grid,
     int min_i, int min_j, int max_i, int max_j) override;
+
   virtual void reset() override;
   virtual void onFootprintChanged() override;
-  virtual bool isClearable() override { return false; }
+  virtual bool isClearable() override;  // ← ADD THIS MISSING METHOD
 
 private:
-  // TF2-based robot pose tracking
-  bool getRobotPose(double& x, double& y, double& yaw);
-  
-  void sharedGridCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
-  bool shouldApplyObstacle(double obs_x, double obs_y, double robot_x, double robot_y);
-  // void clearOwnFootprint(nav2_costmap_2d::Costmap2D& master_grid, 
-  //                     double robot_x, double robot_y, 
-  //                     int min_i, int min_j, int max_i, int max_j);
-
-  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr grid_sub_;
-  std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
-  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
-
-  nav_msgs::msg::OccupancyGrid::SharedPtr latest_shared_grid_;
-  std::mutex grid_mutex_;
-
+  // Configuration parameters
   std::string robot_namespace_;
   std::string shared_grid_topic_;
   std::string global_frame_;
@@ -73,9 +60,22 @@ private:
   double exclusion_buffer_;
   double transform_timeout_;
 
-  rclcpp::Time last_update_time_;
+  // Update tracking (MOVED BEFORE last_* members to fix initialization order)
   bool need_recalculation_;
   double last_min_x_, last_min_y_, last_max_x_, last_max_y_;
+
+  // ROS interfaces  
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr grid_sub_;
+  std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+
+  // Shared grid data
+  nav_msgs::msg::OccupancyGrid::SharedPtr latest_shared_grid_;
+  std::mutex grid_mutex_;
+
+  // Private methods
+  void sharedGridCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
+  bool getRobotPose(double& x, double& y);
 };
 
 } // namespace multi_robot_costmap_plugin

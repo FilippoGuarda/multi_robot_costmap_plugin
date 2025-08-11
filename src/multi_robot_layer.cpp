@@ -57,8 +57,6 @@ void MultiRobotLayer::onInitialize()
   declareParameter("exclusion_buffer", rclcpp::ParameterValue(0.1));
   declareParameter("transform_timeout", rclcpp::ParameterValue(0.1));
 
-  // OPTIMIZATION PARAMETERS (kept for future use)
-  declareParameter("min_update_distance", rclcpp::ParameterValue(0.05)); // Reduced threshold
   declareParameter("max_obstacles_per_update", rclcpp::ParameterValue(5000)); // Increased limit
 
   // Get parameters
@@ -69,7 +67,6 @@ void MultiRobotLayer::onInitialize()
   node->get_parameter(name_ + ".robot_radius", robot_radius_);
   node->get_parameter(name_ + ".exclusion_buffer", exclusion_buffer_);
   node->get_parameter(name_ + ".transform_timeout", transform_timeout_);
-  node->get_parameter(name_ + ".min_update_distance", min_update_distance_);
   node->get_parameter(name_ + ".max_obstacles_per_update", max_obstacles_per_update_);
 
   enabled_ = enabled;
@@ -93,14 +90,14 @@ void MultiRobotLayer::onInitialize()
   // Initialize timestamps
   last_grid_update_ = node->get_clock()->now();
 
-  // OPTIMIZATION: Subscribe to shared obstacle grid with optimized callback
+  // Subscribe to shared obstacle grid
   grid_sub_ = node->create_subscription<nav_msgs::msg::OccupancyGrid>(
     shared_grid_topic,
-    rclcpp::QoS(1).reliable().durability_volatile(), // Don't need persistence
+    rclcpp::QoS(1).reliable().durability_volatile(),
     std::bind(&MultiRobotLayer::sharedGridCallback, this, std::placeholders::_1));
 
   RCLCPP_INFO(node->get_logger(), 
-              "OptimizedMultiRobotLayer initialized for robot %s, subscribing to %s", 
+              "MultiRobotLayer initialized (NO THROTTLING) for robot %s, subscribing to %s", 
               robot_namespace_.c_str(), shared_grid_topic.c_str());
 
   // CRITICAL: Signal that this layer has current data
@@ -120,11 +117,8 @@ void MultiRobotLayer::sharedGridCallback(const nav_msgs::msg::OccupancyGrid::Sha
   if (!node) return;
 
   auto now = node->get_clock()->now();
-  if ((now - last_grid_update_).seconds() < 0.05) { // Max 20Hz processing
-    return;
-  }
 
-  // OPTIMIZATION 1: Use mutex-protected assignment instead of atomic store
+  // OPTIMIZATION 1: Use mutex-protected assignment
   {
     std::lock_guard<std::mutex> lock(active_grid_mutex_);
     active_grid_ = msg;
@@ -139,11 +133,12 @@ void MultiRobotLayer::sharedGridCallback(const nav_msgs::msg::OccupancyGrid::Sha
   static int callback_count = 0;
   callback_count++;
   
-  if (callback_count % 50 == 1) {
-    RCLCPP_INFO(node->get_logger(), 
-                "Processed grid %d: %zu obstacles from shared topic", 
-                callback_count, current_obstacles_.size());
-  }
+  // Used for debugging, removed
+  // if (callback_count % 10 == 1) { // More frequent logging since no throttling
+  //   RCLCPP_INFO(node->get_logger(), 
+  //               "Processed grid %d: %zu obstacles from shared topic (NO THROTTLING)", 
+  //               callback_count, current_obstacles_.size());
+  // }
 }
 
 void MultiRobotLayer::extractObstaclesFromGrid(const nav_msgs::msg::OccupancyGrid::SharedPtr grid)
@@ -175,26 +170,15 @@ void MultiRobotLayer::extractObstaclesFromGrid(const nav_msgs::msg::OccupancyGri
     current_obstacles_ = std::move(new_obstacles);
   }
 
-  // REMOVED: updateROIFromChanges() - no longer using ROI optimization
-  
   RCLCPP_DEBUG(node_.lock()->get_logger(), 
                "Extracted %zu obstacles from shared grid", current_obstacles_.size());
 }
 
 bool MultiRobotLayer::shouldUpdateCosts(double robot_x, double robot_y)
 {
-  // OPTIMIZATION 4: Only update if robot moved significantly or grid changed
-  bool robot_moved = (std::abs(robot_x - last_robot_x_) > min_update_distance_ ||
-                      std::abs(robot_y - last_robot_y_) > min_update_distance_);
-  
-  bool grid_changed = (grid_sequence_.load() != last_processed_sequence_);
-
-  if (robot_moved) {
-    last_robot_x_ = robot_x;
-    last_robot_y_ = robot_y;
-  }
-
-  return robot_moved || grid_changed;
+  (void)robot_x; // Mark as unused
+  (void)robot_y; // Mark as unused
+  return true;
 }
 
 void MultiRobotLayer::updateBounds(
@@ -210,12 +194,6 @@ void MultiRobotLayer::updateBounds(
 
   RCLCPP_DEBUG(node_.lock()->get_logger(), 
                "updateBounds called: robot at (%.2f, %.2f)", robot_x, robot_y);
-
-  // OPTIMIZATION 4: Early exit if no updates needed
-  if (!shouldUpdateCosts(robot_x, robot_y)) {
-    RCLCPP_DEBUG(node_.lock()->get_logger(), "shouldUpdateCosts returned FALSE - skipping update");
-    return;
-  }
 
   auto grid = getActiveGrid();
   if (!grid) {
@@ -238,9 +216,6 @@ void MultiRobotLayer::updateBounds(
   double original_min_x = *min_x, original_max_x = *max_x;
   double original_min_y = *min_y, original_max_y = *max_y;
 
-  // REMOVED ROI OPTIMIZATION: Always expand bounds to cover full grid areas with obstacles
-  // This ensures all obstacle areas get processed without ROI restrictions
-  
   // Expand bounds to include the entire shared grid area
   double grid_min_x = grid->info.origin.position.x;
   double grid_min_y = grid->info.origin.position.y;
@@ -296,16 +271,15 @@ void MultiRobotLayer::updateCosts(
   int obstacles_applied = 0;
   
   // OPTIMIZATION 2: Process only sparse obstacle cells instead of full grid
-  // REMOVED ROI RESTRICTION: Process all obstacles within the given bounds
   {
     std::lock_guard<std::mutex> lock(obstacles_mutex_);
     
     RCLCPP_INFO(node_.lock()->get_logger(), 
-                "Applying %zu obstacles to costmap bounds (%d,%d) to (%d,%d)",
+                "Applying %zu obstacles to costmap bounds (%d,%d) to (%d,%d) - NO THROTTLING",
                 current_obstacles_.size(), min_i, min_j, max_i, max_j);
     
     for (const auto& obstacle : current_obstacles_) {
-      // Check if obstacle is within update bounds (no ROI restriction)
+      // Check if obstacle is within update bounds
       if (obstacle.x >= min_i && obstacle.x < max_i &&
           obstacle.y >= min_j && obstacle.y < max_j) {
         
@@ -336,11 +310,12 @@ void MultiRobotLayer::updateCosts(
   static int update_count = 0;
   update_count++;
   
-  if (update_count % 25 == 1) {
-    RCLCPP_INFO(node_.lock()->get_logger(), 
-                "Cost update %d: processed %zu obstacles in bounds (%d,%d) to (%d,%d)",
-                update_count, current_obstacles_.size(), min_i, min_j, max_i, max_j);
-  }
+  // Logging used for debugging
+  // if (update_count % 5 == 1) { // More frequent logging since no throttling
+  //   RCLCPP_INFO(node_.lock()->get_logger(), 
+  //               "Cost update %d: processed %zu obstacles in bounds (%d,%d) to (%d,%d)",
+  //               update_count, current_obstacles_.size(), min_i, min_j, max_i, max_j);
+  // }
 }
 
 inline void MultiRobotLayer::applyCostToCell(nav2_costmap_2d::Costmap2D & master_grid, int i, int j, unsigned char cost)

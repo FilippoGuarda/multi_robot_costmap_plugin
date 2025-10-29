@@ -301,7 +301,7 @@ void MultiRobotLayer::updateCosts(
     }
   }
 
-  RCLCPP_INFO(node_.lock()->get_logger(), "Applied %d obstacles to master costmap", obstacles_applied);
+  // RCLCPP_INFO(node_.lock()->get_logger(), "Applied %d obstacles to master costmap", obstacles_applied);
 
   // Mark as processed
   last_processed_sequence_ = grid_sequence_.load();

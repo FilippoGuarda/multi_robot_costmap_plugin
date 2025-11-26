@@ -121,8 +121,7 @@ private:
   std::mutex active_grid_mutex_;
 
   // OPTIMIZATION 2: Sparse obstacle storage
-  std::unordered_set<ObstacleCell, ObstacleCellHash> current_obstacles_;
-  std::unordered_set<ObstacleCell, ObstacleCellHash> previous_obstacles_;
+  std::vector<ObstacleCell> current_obstacles_;
   std::mutex obstacles_mutex_;
 
   // OPTIMIZATION 3: Region-of-Interest tracking

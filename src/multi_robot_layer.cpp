@@ -145,34 +145,43 @@ void MultiRobotLayer::extractObstaclesFromGrid(const nav_msgs::msg::OccupancyGri
 {
   if (!grid) return;
 
-  // OPTIMIZATION 2: Build sparse obstacle representation
-  std::unordered_set<ObstacleCell, ObstacleCellHash> new_obstacles;
-  new_obstacles.reserve(max_obstacles_per_update_); // Pre-allocate
-
-  int processed_count = 0;
+  // OPTIMIZATION: Use vector instead of set. 
+  // Reserve memory to prevent reallocations.
+  std::vector<ObstacleCell> new_obstacles;
   
-  // Process grid efficiently - early exit if too many obstacles
-  for (int y = 0; y < static_cast<int>(grid->info.height) && processed_count < max_obstacles_per_update_; ++y) {
-    for (int x = 0; x < static_cast<int>(grid->info.width) && processed_count < max_obstacles_per_update_; ++x) {
-      int index = y * grid->info.width + x;
-      
-      if (index < static_cast<int>(grid->data.size()) && grid->data[index] > 50) {
-        new_obstacles.insert({x, y, static_cast<unsigned char>(LETHAL_OBSTACLE)});
-        processed_count++;
-      }
+  // Heuristic: Estimate 5% of map is occupied to reserve memory
+  size_t estimated_obstacles = (grid->info.width * grid->info.height) * 0.05;
+  new_obstacles.reserve(std::min(estimated_obstacles, (size_t)max_obstacles_per_update_));
+
+  const auto& data = grid->data;
+  int width = grid->info.width;
+  int height = grid->info.height;
+  int limit = max_obstacles_per_update_;
+  
+  // OPTIMIZATION: Flattened loop is friendlier to CPU cache prefetchers
+  // and strictly linear memory access.
+  size_t total_cells = data.size();
+  int count = 0;
+
+  for (size_t i = 0; i < total_cells && count < limit; ++i) {
+    if (data[i] > 50) { // LETHAL
+      // Only calculate x,y when necessary
+      new_obstacles.push_back({
+        static_cast<int>(i % width), 
+        static_cast<int>(i / width), 
+        static_cast<unsigned char>(LETHAL_OBSTACLE)
+      });
+      count++;
     }
   }
 
-  // Update obstacle storage
-  {
-    std::lock_guard<std::mutex> lock(obstacles_mutex_);
-    previous_obstacles_ = std::move(current_obstacles_);
-    current_obstacles_ = std::move(new_obstacles);
-  }
-
+  std::lock_guard<std::mutex> lock(obstacles_mutex_);
+  current_obstacles_ = std::move(new_obstacles);
+  
   RCLCPP_DEBUG(node_.lock()->get_logger(), 
-               "Extracted %zu obstacles from shared grid", current_obstacles_.size());
+    "Extracted %zu obstacles from shared grid", current_obstacles_.size());
 }
+
 
 bool MultiRobotLayer::shouldUpdateCosts(double robot_x, double robot_y)
 {
@@ -261,61 +270,41 @@ void MultiRobotLayer::updateCosts(
     return;
   }
 
-  // Get robot position for exclusion
-  double robot_x, robot_y;
-  if (!getRobotPose(robot_x, robot_y)) {
-    RCLCPP_WARN(node_.lock()->get_logger(), "Could not get robot pose");
-    return;
-  }
+ double robot_x, robot_y;
+  if (!getRobotPose(robot_x, robot_y)) return;
+  unsigned int r_mx, r_my;
+  if (!master_grid.worldToMap(robot_x, robot_y, r_mx, r_my)) return;
 
-  int obstacles_applied = 0;
+  // Calculate squared radius in cells to avoid sqrt() inside the loop
+  double res = master_grid.getResolution();
+  double safe_radius = robot_radius_ + exclusion_buffer_;
+  int radius_cells = std::ceil(safe_radius / res);
+  int radius_sq = radius_cells * radius_cells;
+
+  std::lock_guard<std::mutex> lock(obstacles_mutex_);
   
-  // OPTIMIZATION 2: Process only sparse obstacle cells instead of full grid
-  {
-    std::lock_guard<std::mutex> lock(obstacles_mutex_);
-    
-    RCLCPP_INFO(node_.lock()->get_logger(), 
-                "Applying %zu obstacles to costmap bounds (%d,%d) to (%d,%d) - NO THROTTLING",
-                current_obstacles_.size(), min_i, min_j, max_i, max_j);
-    
-    for (const auto& obstacle : current_obstacles_) {
-      // Check if obstacle is within update bounds
-      if (obstacle.x >= min_i && obstacle.x < max_i &&
-          obstacle.y >= min_j && obstacle.y < max_j) {
-        
-        // Convert to world coordinates for robot exclusion check
-        double world_x, world_y;
-        master_grid.mapToWorld(obstacle.x, obstacle.y, world_x, world_y);
+  for (const auto& obstacle : current_obstacles_) {
+    // 1. Check bounds
+    if (obstacle.x < min_i || obstacle.x >= max_i || 
+        obstacle.y < min_j || obstacle.y >= max_j) {
+      continue;
+    }
 
-        // Skip robot exclusion zone
-        double dx = world_x - robot_x;
-        double dy = world_y - robot_y;
-        double distance = sqrt(dx*dx + dy*dy);
-        
-        if (distance >= robot_radius_ + exclusion_buffer_) {
-          // OPTIMIZATION: Inlined cost application
-          applyCostToCell(master_grid, obstacle.x, obstacle.y, obstacle.cost);
-          obstacles_applied++;
-        }
+    // 2. OPTIMIZATION: Check distance in GRID FRAME (Integer Math)
+    int dx = obstacle.x - static_cast<int>(r_mx);
+    int dy = obstacle.y - static_cast<int>(r_my);
+    
+    // Compare squared distance
+    if ((dx*dx + dy*dy) >= radius_sq) {
+      // Inlined applyCostToCell
+      unsigned char old_cost = master_grid.getCost(obstacle.x, obstacle.y);
+      if (obstacle.cost > old_cost) {
+        master_grid.setCost(obstacle.x, obstacle.y, obstacle.cost);
       }
     }
   }
-
-  // RCLCPP_INFO(node_.lock()->get_logger(), "Applied %d obstacles to master costmap", obstacles_applied);
-
-  // Mark as processed
-  last_processed_sequence_ = grid_sequence_.load();
-  need_recalculation_ = false;
-
-  static int update_count = 0;
-  update_count++;
   
-  // Logging used for debugging
-  // if (update_count % 5 == 1) { // More frequent logging since no throttling
-  //   RCLCPP_INFO(node_.lock()->get_logger(), 
-  //               "Cost update %d: processed %zu obstacles in bounds (%d,%d) to (%d,%d)",
-  //               update_count, current_obstacles_.size(), min_i, min_j, max_i, max_j);
-  // }
+  need_recalculation_ = false;
 }
 
 inline void MultiRobotLayer::applyCostToCell(nav2_costmap_2d::Costmap2D & master_grid, int i, int j, unsigned char cost)
@@ -350,7 +339,6 @@ void MultiRobotLayer::reset()
 {
   std::lock_guard<std::mutex> lock(obstacles_mutex_);
   current_obstacles_.clear();
-  previous_obstacles_.clear();
   need_recalculation_ = true;
 }
 

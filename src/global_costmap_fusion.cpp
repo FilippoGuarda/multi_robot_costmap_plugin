@@ -18,6 +18,8 @@
 #include <memory>
 #include <cmath>
 #include <algorithm>
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2/LinearMath/Matrix3x3.h>
 
 using namespace std::chrono_literals;
 
@@ -256,51 +258,107 @@ void GlobalCostmapFusion::initializeObstacleMemory()
 void GlobalCostmapFusion::processLaserScan(const sensor_msgs::msg::LaserScan::SharedPtr scan,
                                            const std::string& robot_id)
 {
-  if (!map_initialized_ || !obstacle_memory_.initialized) {
-    return;
-  }
+  if (!map_initialized_ || !obstacle_memory_.initialized) return;
 
+  // 1. GET TRANSFORM
   geometry_msgs::msg::TransformStamped robot_transform;
-  if (!getRobotTransform(robot_id, robot_transform)) {
-    return;
-  }
+  if (!getRobotTransform(robot_id, robot_transform)) return;
+  // 2. PRE-CALCULATE MATH
+  double tx = robot_transform.transform.translation.x;
+  double ty = robot_transform.transform.translation.y;
 
-  // Extract robot position
+  // CORRECTED YAW EXTRACTION
+  tf2::Quaternion q(
+    robot_transform.transform.rotation.x,
+    robot_transform.transform.rotation.y,
+    robot_transform.transform.rotation.z,
+    robot_transform.transform.rotation.w
+  );
+  
+  // Convert quaternion to RPY matrix to extract yaw safely
+  tf2::Matrix3x3 m(q);
+  double roll, pitch, yaw;
+  m.getRPY(roll, pitch, yaw);
+
+  double c_yaw = cos(yaw);
+  double s_yaw = sin(yaw);
+
   geometry_msgs::msg::Point robot_pos;
-  robot_pos.x = robot_transform.transform.translation.x;
-  robot_pos.y = robot_transform.transform.translation.y;
+  robot_pos.x = tx;
+  robot_pos.y = ty;
   robot_pos.z = 0.0;
 
   std::vector<geometry_msgs::msg::Point> obstacles;
   std::vector<geometry_msgs::msg::Point> ray_endpoints;
+  
+  size_t num_ranges = scan->ranges.size();
+  obstacles.reserve(num_ranges);
+  // We reserve less for endpoints because we will downsample them
+  ray_endpoints.reserve(num_ranges / 3 + 1); 
 
-  // Process each scan point
-  for (size_t i = 0; i < scan->ranges.size(); ++i) {
+  // 3. OPTIMIZED LOOP
+  for (size_t i = 0; i < num_ranges; ++i) {
     double range = scan->ranges[i];
-    
-    // Skip invalid readings
-    if (std::isnan(range) || std::isinf(range)) {
+    bool is_obstacle = true;
+
+    // Logic for Infinite/Far readings
+    if (std::isinf(range)) {
+      range = scan->range_max - 0.01;
+      is_obstacle = false;
+    } 
+    else if (range >= scan->range_max * 0.99) {
+      range = scan->range_max - 0.01;
+      is_obstacle = false;
+    }
+    else if (std::isnan(range)) {
+      continue;
+    }
+    else if (range < scan->range_min) {
       continue;
     }
 
-    // Convert scan point to world coordinates
-    geometry_msgs::msg::Point world_point = convertScanPointToWorld(scan, i, robot_transform);
+    // Calculate scan angle
+    double angle = scan->angle_min + i * scan->angle_increment;
     
-    // If it's a valid obstacle detection
-    if (range >= scan->range_min && range <= scan->range_max && range < scan->range_max * 0.99) {
-      if (!isRobotLocation(world_point)) {
-        obstacles.push_back(world_point);
+    // OPTIMIZATION: Manual Rotation & Translation
+    // Convert polar (range, angle) to Cartesian (local_x, local_y)
+    double lx = range * cos(angle);
+    double ly = range * sin(angle);
+
+    // Apply rotation and translation manually (2D transformation)
+    // x' = x*cos(theta) - y*sin(theta) + tx
+    // y' = x*sin(theta) + y*cos(theta) + ty
+    double wx = (lx * c_yaw - ly * s_yaw) + tx;
+    double wy = (lx * s_yaw + ly * c_yaw) + ty;
+
+    geometry_msgs::msg::Point world_point;
+    world_point.x = wx;
+    world_point.y = wy;
+    world_point.z = 0.0;
+
+    // Add to obstacles if valid
+    if (is_obstacle) {
+      // Simple distance check is faster than calling isRobotLocation immediately
+      // Only do the expensive check if it matters
+      double dx = wx - tx;
+      double dy = wy - ty;
+      // Squared distance check avoids sqrt()
+      if ((dx*dx + dy*dy) > (robot_radius_ * robot_radius_)) {
+          obstacles.push_back(world_point);
       }
     }
-    
-    // All endpoints are used for ray tracing (whether obstacle or free space)
-    ray_endpoints.push_back(world_point);
+
+    // 4. RAYTRACE DOWNSAMPLING
+    // Ray-tracing is expensive (Bresenham algorithm). 
+    // We don't need to clear space for *every* single degree.
+    // Skipping 2 or 3 beams (downsampling) still clears the area effectively
+    // but reduces ray-tracing cost by 66%.
+    if (i % 3 == 0 || i == num_ranges - 1) {
+      ray_endpoints.push_back(world_point);
+    }
   }
 
-  // Update persistent memory with new detections
   updateObstacleMemory(obstacles, robot_pos);
-  
-  // Clear obstacles along rays where we now see free space
   rayTraceClearance(robot_pos, ray_endpoints);
 }
 
@@ -573,28 +631,29 @@ void GlobalCostmapFusion::cleanupOldObstacles()
 
 void GlobalCostmapFusion::publishSharedObstacles()
 {
-  if (!map_initialized_ || !obstacle_memory_.initialized) {
-    return;
-  }
-  
+  if (!map_initialized_ || !obstacle_memory_.initialized) return;
+
   std::lock_guard<std::mutex> lock(obstacle_memory_.memory_mutex);
-  
-  // Create occupancy grid message
+
   nav_msgs::msg::OccupancyGrid grid;
   grid.header.stamp = this->get_clock()->now();
   grid.header.frame_id = global_frame_;
-  
   grid.info.resolution = grid_resolution_;
   grid.info.width = obstacle_memory_.obstacle_grid.cols;
   grid.info.height = obstacle_memory_.obstacle_grid.rows;
   grid.info.origin = grid_origin_;
-  
-  // Convert OpenCV matrix to occupancy grid data
-  grid.data.resize(grid.info.width * grid.info.height);
-  for (int y = 0; y < obstacle_memory_.obstacle_grid.rows; ++y) {
-    for (int x = 0; x < obstacle_memory_.obstacle_grid.cols; ++x) {
-      int index = y * grid.info.width + x;
-      grid.data[index] = obstacle_memory_.obstacle_grid.at<uint8_t>(y, x);
+
+  size_t data_size = grid.info.width * grid.info.height;
+  grid.data.resize(data_size);
+
+  if (obstacle_memory_.obstacle_grid.isContinuous()) {
+    std::memcpy(grid.data.data(), obstacle_memory_.obstacle_grid.data, data_size);
+  } else {
+    // Fallback for non-continuous memory
+    for (int y = 0; y < obstacle_memory_.obstacle_grid.rows; ++y) {
+      const uint8_t* row_ptr = obstacle_memory_.obstacle_grid.ptr<uint8_t>(y);
+      std::copy(row_ptr, row_ptr + obstacle_memory_.obstacle_grid.cols, 
+                grid.data.begin() + y * grid.info.width);
     }
   }
   

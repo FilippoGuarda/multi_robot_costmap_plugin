@@ -20,8 +20,8 @@ global_costmap_fusion:
     
 
     # Map memory parameters
-    obstacle_decay_time: 30.0      # Start decay after 30 seconds
-    max_obstacle_age: 300.0        # Remove after 5 minutes
+    obstacle_decay_time: 1.0      # Start decay after 1 second
+    max_obstacle_age: 10.0      # Remove after 10 seconds
     min_detection_count: 2         # Need 2+ hits to mark as obstacle
     enable_memory_cleanup: true    # Enable periodic cleanup
 

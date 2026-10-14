@@ -87,7 +87,8 @@ private:
   void updateObstacleMemory(const std::vector<geometry_msgs::msg::Point>& obstacles, 
                             const geometry_msgs::msg::Point& robot_pos);
   void rayTraceClearance(const geometry_msgs::msg::Point& robot_pos, 
-                         const std::vector<geometry_msgs::msg::Point>& endpoints);
+                         const std::vector<geometry_msgs::msg::Point>& endpoints,
+                         bool clear_endpoint);
   void rayTraceLine(const cv::Point2i& start, const cv::Point2i& end, 
                     std::vector<cv::Point2i>& line_points) const;
   
@@ -113,6 +114,7 @@ private:
   std::string map_topic_;
   std::string map_service_;
   std::string base_frame_suffix_;
+  double lidar_max_range_;            // Lidar max range (<= 0: use scan range_max)
   
   // Memory management parameters
   double obstacle_decay_time_;        // Time before obstacles start decaying

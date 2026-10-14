@@ -17,6 +17,12 @@ global_costmap_fusion:
     map_topic: /map
     map_service: "map_server/map"
     base_frame_suffix: /base_footprint
+
+    # Lidar configuration
+    # Readings that are inf or >= lidar_max_range are treated as "no detection":
+    # the ray is cleared up to lidar_max_range and no obstacle is marked.
+    # Set to 0.0 to use the range_max reported in the LaserScan message.
+    lidar_max_range: 0.0       # meters (e.g. 12.0), 0.0 = use scan range_max
     
 
     # Map memory parameters

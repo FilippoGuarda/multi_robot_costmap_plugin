@@ -125,6 +125,10 @@ global_costmap_fusion:
     map_topic: "/map"              # Map topic for parameter extraction
     map_service: "/map_server/map" # Map service fallback
     base_frame_suffix: "base_footprint"  # Robot base frame suffix
+
+    # Lidar configuration
+    lidar_max_range: 12.0          # Meters; inf or >= this range = no detection
+                                   # (ray cleared, no obstacle). 0.0 = use scan range_max
 ```
 
 ### Nav2 Costmap Configuration

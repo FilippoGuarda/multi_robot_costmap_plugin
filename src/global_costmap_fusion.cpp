@@ -40,6 +40,11 @@ GlobalCostmapFusion::GlobalCostmapFusion(const rclcpp::NodeOptions & options)
   this->declare_parameter("map_topic", "map");
   this->declare_parameter("map_service", "map_server/map");
   this->declare_parameter("base_frame_suffix", "_base_link");
+  // Lidar maximum range in meters. Readings that are inf or at/beyond this range
+  // are treated as "no detection" (free space up to the max range).
+  // Set to 0.0 (or negative) to use the range_max reported in the LaserScan message.
+  // The effective range is never larger than the scan's own range_max.
+  this->declare_parameter("lidar_max_range", 0.0);
   
   // Memory management parameters for persistent obstacles
   this->declare_parameter("obstacle_decay_time", 30.0);
@@ -58,6 +63,7 @@ GlobalCostmapFusion::GlobalCostmapFusion(const rclcpp::NodeOptions & options)
   map_topic_ = this->get_parameter("map_topic").as_string();
   map_service_ = this->get_parameter("map_service").as_string();
   base_frame_suffix_ = this->get_parameter("base_frame_suffix").as_string();
+  lidar_max_range_ = this->get_parameter("lidar_max_range").as_double();
   
   obstacle_decay_time_ = this->get_parameter("obstacle_decay_time").as_double();
   max_obstacle_age_ = this->get_parameter("max_obstacle_age").as_double();
@@ -289,29 +295,38 @@ void GlobalCostmapFusion::processLaserScan(const sensor_msgs::msg::LaserScan::Sh
   robot_pos.z = 0.0;
 
   std::vector<geometry_msgs::msg::Point> obstacles;
-  std::vector<geometry_msgs::msg::Point> ray_endpoints;
+  std::vector<geometry_msgs::msg::Point> hit_endpoints;
+  std::vector<geometry_msgs::msg::Point> free_endpoints;
   
   size_t num_ranges = scan->ranges.size();
   obstacles.reserve(num_ranges);
-  // We reserve less for endpoints because we will downsample them
-  ray_endpoints.reserve(num_ranges / 3 + 1); 
+  // We reserve less for hit endpoints because we will downsample them
+  hit_endpoints.reserve(num_ranges / 3 + 1);
+  free_endpoints.reserve(num_ranges);
+
+  // Effective maximum range: configured lidar range (never beyond the scan's own
+  // range_max, readings past it are invalid), or the one reported by the scan
+  double max_range = (lidar_max_range_ > 0.0) ?
+    std::min(lidar_max_range_, static_cast<double>(scan->range_max)) : scan->range_max;
+  double free_range = max_range - 0.01;
 
   // 3. OPTIMIZED LOOP
   for (size_t i = 0; i < num_ranges; ++i) {
     double range = scan->ranges[i];
     bool is_obstacle = true;
 
-    // Logic for Infinite/Far readings
+    // Two "no detection" cases: infinite reading and reading at/beyond max range.
+    // Both mean the beam hit nothing, so the whole ray up to max range is free.
     if (std::isinf(range)) {
-      range = scan->range_max - 0.01;
+      range = free_range;
       is_obstacle = false;
     } 
-    else if (range >= scan->range_max * 0.99) {
-      range = scan->range_max - 0.01;
-      is_obstacle = false;
-    }
     else if (std::isnan(range)) {
       continue;
+    }
+    else if (range >= max_range * 0.99) {
+      range = free_range;
+      is_obstacle = false;
     }
     else if (range < scan->range_min) {
       continue;
@@ -336,16 +351,21 @@ void GlobalCostmapFusion::processLaserScan(const sensor_msgs::msg::LaserScan::Sh
     world_point.y = wy;
     world_point.z = 0.0;
 
-    // Add to obstacles if valid
-    if (is_obstacle) {
-      // Simple distance check is faster than calling isRobotLocation immediately
-      // Only do the expensive check if it matters
-      double dx = wx - tx;
-      double dy = wy - ty;
-      // Squared distance check avoids sqrt()
-      if ((dx*dx + dy*dy) > (robot_radius_ * robot_radius_)) {
-          obstacles.push_back(world_point);
-      }
+    if (!is_obstacle) {
+      // No-detection rays are always traced (no downsampling): they are the only
+      // source of clearing in empty areas, and at long range skipped beams leave
+      // gaps wider than a cell where stale obstacles would survive.
+      free_endpoints.push_back(world_point);
+      continue;
+    }
+
+    // Simple distance check is faster than calling isRobotLocation immediately
+    // Only do the expensive check if it matters
+    double dx = wx - tx;
+    double dy = wy - ty;
+    // Squared distance check avoids sqrt()
+    if ((dx*dx + dy*dy) > (robot_radius_ * robot_radius_)) {
+        obstacles.push_back(world_point);
     }
 
     // 4. RAYTRACE DOWNSAMPLING
@@ -354,12 +374,13 @@ void GlobalCostmapFusion::processLaserScan(const sensor_msgs::msg::LaserScan::Sh
     // Skipping 2 or 3 beams (downsampling) still clears the area effectively
     // but reduces ray-tracing cost by 66%.
     if (i % 3 == 0 || i == num_ranges - 1) {
-      ray_endpoints.push_back(world_point);
+      hit_endpoints.push_back(world_point);
     }
   }
 
   updateObstacleMemory(obstacles, robot_pos);
-  rayTraceClearance(robot_pos, ray_endpoints);
+  rayTraceClearance(robot_pos, hit_endpoints, false);
+  rayTraceClearance(robot_pos, free_endpoints, true);
 }
 
 geometry_msgs::msg::Point GlobalCostmapFusion::convertScanPointToWorld(
@@ -458,7 +479,8 @@ void GlobalCostmapFusion::updateObstacleMemory(const std::vector<geometry_msgs::
 }
 
 void GlobalCostmapFusion::rayTraceClearance(const geometry_msgs::msg::Point& robot_pos, 
-                                            const std::vector<geometry_msgs::msg::Point>& endpoints)
+                                            const std::vector<geometry_msgs::msg::Point>& endpoints,
+                                            bool clear_endpoint)
 {
   if (!obstacle_memory_.initialized) return;
   
@@ -474,8 +496,10 @@ void GlobalCostmapFusion::rayTraceClearance(const geometry_msgs::msg::Point& rob
     std::vector<cv::Point2i> ray_points;
     rayTraceLine(robot_grid, end_grid, ray_points);
     
-    // Clear obstacles along the ray (excluding the endpoint)
-    for (size_t i = 0; i < ray_points.size() - 1; ++i) {
+    // Clear obstacles along the ray. The endpoint is kept for real hits and
+    // cleared for no-detection rays (nothing was seen there either).
+    size_t num_points = clear_endpoint ? ray_points.size() : ray_points.size() - 1;
+    for (size_t i = 0; i < num_points; ++i) {
       const auto& point = ray_points[i];
       
       // Check bounds

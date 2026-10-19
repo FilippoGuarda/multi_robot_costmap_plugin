@@ -37,6 +37,7 @@
 #include <string>
 #include <memory>
 #include <mutex>
+#include <unordered_set>
 
 namespace multi_robot_costmap_plugin
 {
@@ -61,6 +62,7 @@ private:
     cv::Mat obstacle_grid;          // Persistent obstacle occupancy (CV_8UC1: 0=free, 100=occupied)
     cv::Mat timestamp_grid;         // Last observation time per cell (CV_64FC1)
     cv::Mat confidence_grid;        // Detection confidence/count per cell (CV_32FC1)
+    std::unordered_set<int> occupied_cells;  // Linear indices (y * cols + x) of occupied cells
     std::mutex memory_mutex;        // Thread safety for memory access
     bool initialized;
     
@@ -76,6 +78,8 @@ private:
   // Laser scan processing
   void processLaserScan(const sensor_msgs::msg::LaserScan::SharedPtr msg, const std::string& robot_id);
   bool getRobotTransform(const std::string& robot_id, geometry_msgs::msg::TransformStamped& transform);
+  bool getScanTransform(const std::string& robot_id, const rclcpp::Time& stamp,
+                        geometry_msgs::msg::TransformStamped& transform);
   geometry_msgs::msg::Point convertScanPointToWorld(
     const sensor_msgs::msg::LaserScan::SharedPtr scan,
     size_t point_index,
@@ -115,12 +119,14 @@ private:
   std::string map_service_;
   std::string base_frame_suffix_;
   double lidar_max_range_;            // Lidar max range (<= 0: use scan range_max)
+  double transform_tolerance_;        // Max wait for TF at scan timestamp (s)
   
   // Memory management parameters
   double obstacle_decay_time_;        // Time before obstacles start decaying
   double max_obstacle_age_;           // Maximum age before removal
   int min_detection_count_;           // Minimum hits to mark as obstacle
   bool enable_memory_cleanup_;        // Enable automatic cleanup
+  double cleanup_period_;             // Period of the cleanup pass (s)
 
   // Map-derived parameters (set from received map)
   double grid_resolution_;

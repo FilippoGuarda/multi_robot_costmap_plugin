@@ -23,6 +23,8 @@ global_costmap_fusion:
     # the ray is cleared up to lidar_max_range and no obstacle is marked.
     # Set to 0.0 to use the range_max reported in the LaserScan message.
     lidar_max_range: 0.0       # meters (e.g. 12.0), 0.0 = use scan range_max
+    transform_tolerance: 0.1   # s - max wait for the robot TF at the scan timestamp,
+                               # falls back to the latest TF if not available
     
 
     # Map memory parameters
@@ -30,6 +32,7 @@ global_costmap_fusion:
     max_obstacle_age: 10.0      # Remove after 10 seconds
     min_detection_count: 2         # Need 2+ hits to mark as obstacle
     enable_memory_cleanup: true    # Enable periodic cleanup
+    cleanup_period: 15.0           # s (node clock) - period of the decay/cleanup pass
 
 
 #======================================================================

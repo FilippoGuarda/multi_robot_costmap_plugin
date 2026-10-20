@@ -129,6 +129,9 @@ global_costmap_fusion:
     # Lidar configuration
     lidar_max_range: 12.0          # Meters; inf or >= this range = no detection
                                    # (ray cleared, no obstacle). 0.0 = use scan range_max
+    transform_tolerance: 0.1       # Seconds to wait for the robot TF at the scan timestamp
+                                   # (falls back to the latest TF if not available)
+    cleanup_period: 15.0           # Seconds (node clock, sim time aware) between decay passes
 ```
 
 ### Nav2 Costmap Configuration

@@ -45,12 +45,16 @@ GlobalCostmapFusion::GlobalCostmapFusion(const rclcpp::NodeOptions & options)
   // Set to 0.0 (or negative) to use the range_max reported in the LaserScan message.
   // The effective range is never larger than the scan's own range_max.
   this->declare_parameter("lidar_max_range", 0.0);
+  // Maximum time (s) to wait for the robot transform at the scan timestamp.
+  // If it is not available in time, the latest transform is used instead.
+  this->declare_parameter("transform_tolerance", 0.1);
   
   // Memory management parameters for persistent obstacles
   this->declare_parameter("obstacle_decay_time", 30.0);
   this->declare_parameter("max_obstacle_age", 300.0);
   this->declare_parameter("min_detection_count", 2);
   this->declare_parameter("enable_memory_cleanup", true);
+  this->declare_parameter("cleanup_period", 15.0);
 
   // Retrieve parameters
   robot_ids_ = this->get_parameter("robot_ids").as_string_array();
@@ -64,11 +68,13 @@ GlobalCostmapFusion::GlobalCostmapFusion(const rclcpp::NodeOptions & options)
   map_service_ = this->get_parameter("map_service").as_string();
   base_frame_suffix_ = this->get_parameter("base_frame_suffix").as_string();
   lidar_max_range_ = this->get_parameter("lidar_max_range").as_double();
+  transform_tolerance_ = this->get_parameter("transform_tolerance").as_double();
   
   obstacle_decay_time_ = this->get_parameter("obstacle_decay_time").as_double();
   max_obstacle_age_ = this->get_parameter("max_obstacle_age").as_double();
   min_detection_count_ = this->get_parameter("min_detection_count").as_int();
   enable_memory_cleanup_ = this->get_parameter("enable_memory_cleanup").as_bool();
+  cleanup_period_ = this->get_parameter("cleanup_period").as_double();
 
   // Initialize TF system
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -81,9 +87,10 @@ GlobalCostmapFusion::GlobalCostmapFusion(const rclcpp::NodeOptions & options)
   grid_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
     "shared_obstacles", rclcpp::QoS(1).reliable());
 
-  // Create periodic timers, in newer ROS2 distrib. gotta use create_timer instead of create_wall_timer
-  transform_update_timer_ = this->create_wall_timer(
-    std::chrono::milliseconds(100), 
+  // Create periodic timers on the node clock (not wall clock), so that periods
+  // follow simulated time when use_sim_time is true
+  transform_update_timer_ = rclcpp::create_timer(
+    this, this->get_clock(), rclcpp::Duration::from_seconds(0.1),
     [this]() {
       try {
         this->updateRobotTransforms();
@@ -92,8 +99,8 @@ GlobalCostmapFusion::GlobalCostmapFusion(const rclcpp::NodeOptions & options)
       }
     });
 
-  publish_timer_ = this->create_wall_timer(
-    std::chrono::milliseconds(static_cast<int>(1000.0 / update_frequency_)),
+  publish_timer_ = rclcpp::create_timer(
+    this, this->get_clock(), rclcpp::Duration::from_seconds(1.0 / update_frequency_),
     [this]() {
       try {
         this->publishSharedObstacles();
@@ -102,8 +109,8 @@ GlobalCostmapFusion::GlobalCostmapFusion(const rclcpp::NodeOptions & options)
       }
     });
 
-  activity_check_timer_ = this->create_wall_timer(
-    std::chrono::seconds(3),  // 3-second delay to avoid startup race
+  activity_check_timer_ = rclcpp::create_timer(
+    this, this->get_clock(), rclcpp::Duration::from_seconds(3.0),  // 3-second delay to avoid startup race
     [this]() {
       try {
         this->checkRobotActivity();
@@ -113,8 +120,8 @@ GlobalCostmapFusion::GlobalCostmapFusion(const rclcpp::NodeOptions & options)
     });
 
   if (enable_memory_cleanup_) {
-    memory_cleanup_timer_ = this->create_wall_timer(
-      std::chrono::seconds(15),  // 15-second delay for startup
+    memory_cleanup_timer_ = rclcpp::create_timer(
+      this, this->get_clock(), rclcpp::Duration::from_seconds(cleanup_period_),
       [this]() {
         try {
           this->cleanupOldObstacles();
@@ -247,6 +254,7 @@ void GlobalCostmapFusion::initializeObstacleMemory()
     obstacle_memory_.obstacle_grid = cv::Mat::zeros(grid_height_cells, grid_width_cells, CV_8UC1);
     obstacle_memory_.timestamp_grid = cv::Mat::zeros(grid_height_cells, grid_width_cells, CV_64FC1);
     obstacle_memory_.confidence_grid = cv::Mat::zeros(grid_height_cells, grid_width_cells, CV_32FC1);
+    obstacle_memory_.occupied_cells.clear();
 
     obstacle_memory_.initialized = true;
 
@@ -267,8 +275,9 @@ void GlobalCostmapFusion::processLaserScan(const sensor_msgs::msg::LaserScan::Sh
   if (!map_initialized_ || !obstacle_memory_.initialized) return;
 
   // 1. GET TRANSFORM
+  // Use the robot pose at the scan timestamp, so rotations don't smear obstacles
   geometry_msgs::msg::TransformStamped robot_transform;
-  if (!getRobotTransform(robot_id, robot_transform)) return;
+  if (!getScanTransform(robot_id, scan->header.stamp, robot_transform)) return;
   // 2. PRE-CALCULATE MATH
   double tx = robot_transform.transform.translation.x;
   double ty = robot_transform.transform.translation.y;
@@ -410,6 +419,26 @@ geometry_msgs::msg::Point GlobalCostmapFusion::convertScanPointToWorld(
   return world_point.point;
 }
 
+bool GlobalCostmapFusion::getScanTransform(const std::string& robot_id,
+                                           const rclcpp::Time& stamp,
+                                           geometry_msgs::msg::TransformStamped& transform)
+{
+  try {
+    // Waits up to transform_tolerance for TF to catch up with the scan stamp.
+    // The TF listener runs on its own thread, so the buffer keeps filling meanwhile.
+    transform = tf_buffer_->lookupTransform(
+      global_frame_, robot_id + base_frame_suffix_, stamp,
+      rclcpp::Duration::from_seconds(transform_tolerance_));
+    return true;
+  } catch (const tf2::TransformException& ex) {
+    // Fall back to the latest transform rather than dropping the scan
+    RCLCPP_DEBUG(this->get_logger(),
+                 "No transform at scan time for %s, using latest: %s",
+                 robot_id.c_str(), ex.what());
+    return getRobotTransform(robot_id, transform);
+  }
+}
+
 bool GlobalCostmapFusion::getRobotTransform(const std::string& robot_id, 
                                             geometry_msgs::msg::TransformStamped& transform)
 {
@@ -473,6 +502,8 @@ void GlobalCostmapFusion::updateObstacleMemory(const std::vector<geometry_msgs::
       // Mark as occupied if confidence threshold is met
       if (confidence >= min_detection_count_) {
         obstacle_memory_.obstacle_grid.at<uint8_t>(grid_point.y, grid_point.x) = 100;
+        obstacle_memory_.occupied_cells.insert(
+          grid_point.y * obstacle_memory_.obstacle_grid.cols + grid_point.x);
       }
     }
   }
@@ -510,6 +541,8 @@ void GlobalCostmapFusion::rayTraceClearance(const geometry_msgs::msg::Point& rob
         if (obstacle_memory_.obstacle_grid.at<uint8_t>(point.y, point.x) > 0) {
           obstacle_memory_.obstacle_grid.at<uint8_t>(point.y, point.x) = 0;
           obstacle_memory_.confidence_grid.at<float>(point.y, point.x) = 0.0f;
+          obstacle_memory_.occupied_cells.erase(
+            point.y * obstacle_memory_.obstacle_grid.cols + point.x);
           // Don't reset timestamp - keep for decay tracking
         }
       }
@@ -617,34 +650,44 @@ void GlobalCostmapFusion::cleanupOldObstacles()
   double current_time = this->get_clock()->now().seconds();
   int cleaned_count = 0;
   
-  // Iterate through all cells and apply aging
-  for (int y = 0; y < obstacle_memory_.obstacle_grid.rows; ++y) {
-    for (int x = 0; x < obstacle_memory_.obstacle_grid.cols; ++x) {
-      if (obstacle_memory_.obstacle_grid.at<uint8_t>(y, x) > 0) {
-        double last_seen = obstacle_memory_.timestamp_grid.at<double>(y, x);
-        double age = current_time - last_seen;
-        
-        if (age > max_obstacle_age_) {
-          // Remove very old obstacles
-          obstacle_memory_.obstacle_grid.at<uint8_t>(y, x) = 0;
-          obstacle_memory_.confidence_grid.at<float>(y, x) = 0.0f;
-          obstacle_memory_.timestamp_grid.at<double>(y, x) = 0.0;
-          cleaned_count++;
-        } else if (age > obstacle_decay_time_) {
-          // Apply gradual decay
-          float decay_factor = 1.0f - (age - obstacle_decay_time_) / (max_obstacle_age_ - obstacle_decay_time_);
-          float current_confidence = obstacle_memory_.confidence_grid.at<float>(y, x);
-          float new_confidence = current_confidence * decay_factor;
-          
-          if (new_confidence < min_detection_count_) {
-            obstacle_memory_.obstacle_grid.at<uint8_t>(y, x) = 0;
-            obstacle_memory_.confidence_grid.at<float>(y, x) = 0.0f;
-            cleaned_count++;
-          } else {
-            obstacle_memory_.confidence_grid.at<float>(y, x) = new_confidence;
-          }
-        }
+  // Apply aging only to occupied cells (tracked incrementally), so the cost
+  // scales with the number of obstacles instead of the map area
+  const int cols = obstacle_memory_.obstacle_grid.cols;
+  auto& occupied = obstacle_memory_.occupied_cells;
+  for (auto it = occupied.begin(); it != occupied.end(); ) {
+    int x = *it % cols;
+    int y = *it / cols;
+    bool remove = false;
+
+    double last_seen = obstacle_memory_.timestamp_grid.at<double>(y, x);
+    double age = current_time - last_seen;
+
+    if (age > max_obstacle_age_) {
+      // Remove very old obstacles
+      obstacle_memory_.obstacle_grid.at<uint8_t>(y, x) = 0;
+      obstacle_memory_.confidence_grid.at<float>(y, x) = 0.0f;
+      obstacle_memory_.timestamp_grid.at<double>(y, x) = 0.0;
+      remove = true;
+    } else if (age > obstacle_decay_time_) {
+      // Apply gradual decay
+      float decay_factor = 1.0f - (age - obstacle_decay_time_) / (max_obstacle_age_ - obstacle_decay_time_);
+      float current_confidence = obstacle_memory_.confidence_grid.at<float>(y, x);
+      float new_confidence = current_confidence * decay_factor;
+
+      if (new_confidence < min_detection_count_) {
+        obstacle_memory_.obstacle_grid.at<uint8_t>(y, x) = 0;
+        obstacle_memory_.confidence_grid.at<float>(y, x) = 0.0f;
+        remove = true;
+      } else {
+        obstacle_memory_.confidence_grid.at<float>(y, x) = new_confidence;
       }
+    }
+
+    if (remove) {
+      it = occupied.erase(it);
+      cleaned_count++;
+    } else {
+      ++it;
     }
   }
   
